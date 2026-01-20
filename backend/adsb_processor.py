@@ -36,12 +36,12 @@ class ADSBProcessor:
             with open(file_path, 'r', encoding='utf-8') as f:
                 first_line = f.readline().strip()
 
-            if self._is_csv_format(first_line):
-                logger.info("检测到CSV格式的ADS-B数据")
-                return self._decode_csv_file(file_path)
-            elif self._is_jsonl_format(first_line):
+            if self._is_jsonl_format(first_line):
                 logger.info("检测到JSONL格式的ADS-B数据")
                 return self._decode_jsonl_file(file_path)
+            elif self._is_csv_format(first_line):
+                logger.info("检测到CSV格式的ADS-B数据")
+                return self._decode_csv_file(file_path)
             else:
                 logger.warning(f"无法识别的ADS-B文件格式，第一行: {first_line[:100]}...")
                 # 尝试JSONL格式解码
@@ -53,13 +53,42 @@ class ADSBProcessor:
 
     def _is_csv_format(self, first_line: str) -> bool:
         """检查是否为CSV格式"""
-        # CSV格式通常包含逗号分隔的列名
-        csv_indicators = ['flight', 'tail_number', 'long', 'lat', 'alt', 'manufacturer', 'model']
-        return any(indicator in first_line for indicator in csv_indicators)
+        # 如果以JSON格式开头，肯定不是CSV
+        if first_line.startswith('{') or first_line.startswith('['):
+            return False
+
+        # CSV格式通常包含逗号分隔的多个字段
+        comma_count = first_line.count(',')
+
+        # CSV格式的ADS-B数据通常包含这些列名
+        csv_adsb_indicators = ['flight,', 'tail_number,', 'long,', 'lat,', 'alt,', 'manufacturer,', 'model,', 'squawk,',
+                               'mph,', 'spotted,']
+
+        # 检查是否包含多个逗号且包含ADS-B列名
+        if comma_count > 5 and any(indicator in first_line for indicator in csv_adsb_indicators):
+            return True
+
+        return False
 
     def _is_jsonl_format(self, first_line: str) -> bool:
         """检查是否为JSONL格式"""
-        return first_line.startswith('{') and 'aircraft_id' in first_line
+        # 宽松的JSONL检测：以大括号开头
+        if not first_line.startswith('{'):
+            return False
+
+        # 尝试解析为JSON来验证格式
+        try:
+            data = json.loads(first_line)
+            # 检查是否包含ADS-B关键字段
+            if 'latitude' in data and 'longitude' in data:
+                return True
+        except json.JSONDecodeError:
+            # 不是有效的JSON，尝试其他检测方法
+            pass
+
+        # 回退到字符串检测
+        adsb_indicators = ['"latitude"', '"longitude"', '"altitude"', '"aircraft"', '"speed"']
+        return any(indicator in first_line for indicator in adsb_indicators)
 
     def _decode_csv_file(self, file_path: Path) -> List[ADSData]:
         """解码CSV格式的ADS-B文件"""
@@ -273,11 +302,11 @@ class ADSBProcessor:
         return decoded_records
 
     def _decode_jsonl_file(self, file_path: Path) -> List[ADSData]:
-        """解码JSONL格式的ADS-B文件（原有逻辑）"""
+        """解码JSONL格式的ADS-B文件"""
         processed_records = []
 
         try:
-            with open(file_path, 'r') as f:
+            with open(file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
 
             total_lines = len(lines)
@@ -300,15 +329,23 @@ class ADSBProcessor:
                         continue
 
                     # 解析JSON行
-                    data = json.loads(line)
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError as e:
+                        logger.debug(f"第 {i} 行JSON解析错误: {str(e)}")
+                        invalid_count += 1
+                        self.cleaning_stats.error_records += 1
+                        self.cleaning_stats.errors_by_type['json_decode'] = \
+                            self.cleaning_stats.errors_by_type.get('json_decode', 0) + 1
+                        continue
 
-                    # 验证必要字段
-                    if not all(key in data for key in ['latitude', 'longitude', 'aircraft_id']):
+                    # 验证必要字段 - 针对示例JSONL格式调整
+                    if 'latitude' not in data or 'longitude' not in data:
+                        logger.debug(f"第 {i} 行缺少经纬度字段")
                         invalid_count += 1
                         self.cleaning_stats.error_records += 1
                         self.cleaning_stats.errors_by_type['missing_fields'] = \
                             self.cleaning_stats.errors_by_type.get('missing_fields', 0) + 1
-                        logger.debug(f"第 {i} 行缺少必要字段")
                         continue
 
                     # 数据清洗检查
@@ -323,8 +360,6 @@ class ADSBProcessor:
                         self.cleaning_stats.warning_records += 1
                         self.cleaning_stats.warnings_by_type['missing_aircraft_id'] = \
                             self.cleaning_stats.warnings_by_type.get('missing_aircraft_id', 0) + 1
-                    else:
-                        self.cleaning_stats.valid_records += 1
 
                     # 检查飞机尾号
                     aircraft_tail = data.get('aircraft_tail', 'unknown')
@@ -336,12 +371,12 @@ class ADSBProcessor:
                     try:
                         lat = float(data.get('latitude', 0.0))
                         lon = float(data.get('longitude', 0.0))
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"第 {i} 行坐标格式错误: {str(e)}")
                         invalid_count += 1
                         self.cleaning_stats.error_records += 1
                         self.cleaning_stats.errors_by_type['coordinate_format'] = \
                             self.cleaning_stats.errors_by_type.get('coordinate_format', 0) + 1
-                        logger.debug(f"第 {i} 行坐标格式错误")
                         continue
 
                     # 验证坐标范围
@@ -366,7 +401,7 @@ class ADSBProcessor:
                     # 检查异常坐标（如0,0海洋交叉点）
                     if lat == 0 and lon == 0:
                         cleaning_notes.append("可疑坐标(0,0)")
-                        data_status = "warning"
+                        data_status = "warning" if data_status == "normal" else data_status
                         self.cleaning_stats.warning_records += 1
                         self.cleaning_stats.warnings_by_type['suspicious_coordinates'] = \
                             self.cleaning_stats.warnings_by_type.get('suspicious_coordinates', 0) + 1
@@ -431,23 +466,23 @@ class ADSBProcessor:
                     processed_records.append(adsb_data)
                     valid_count += 1
 
+                    if data_status == "normal":
+                        self.cleaning_stats.valid_records += 1
+                    elif data_status == "warning":
+                        self.cleaning_stats.warning_records += 1
+                    elif data_status == "error":
+                        self.cleaning_stats.error_records += 1
+
                     # 每处理1000条记录输出一次进度
                     if i % 1000 == 0:
                         logger.info(f"已处理 {i}/{total_lines} 条ADS-B记录，有效: {valid_count}, 无效: {invalid_count}")
 
-                except json.JSONDecodeError as e:
-                    invalid_count += 1
-                    self.cleaning_stats.error_records += 1
-                    self.cleaning_stats.errors_by_type['json_decode'] = \
-                        self.cleaning_stats.errors_by_type.get('json_decode', 0) + 1
-                    logger.debug(f"解析第 {i} 行JSON时出错: {str(e)}")
-                    continue
                 except Exception as e:
+                    logger.debug(f"处理第 {i} 行时出错: {str(e)}")
                     invalid_count += 1
                     self.cleaning_stats.error_records += 1
                     self.cleaning_stats.errors_by_type['processing_error'] = \
                         self.cleaning_stats.errors_by_type.get('processing_error', 0) + 1
-                    logger.debug(f"处理第 {i} 行时出错: {str(e)}")
                     continue
 
         except FileNotFoundError:
@@ -468,7 +503,7 @@ class ADSBProcessor:
     def _parse_timestamp(self, data: Dict[str, Any]) -> datetime:
         """解析时间戳"""
         try:
-            year = data.get('year', 2023)
+            year = data.get('year', 2022)  # 默认2022年
             month = data.get('month', 1)
             day = data.get('day', 1)
             hour = data.get('hour', 0)

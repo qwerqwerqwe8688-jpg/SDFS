@@ -11,112 +11,6 @@ from pathlib import Path
 import subprocess
 
 
-# 在check_dependencies函数中更新ADS-B文件检查部分：
-def check_dependencies():
-    """检查依赖"""
-    required_dirs = [
-        's_data',
-        'backend',
-        'frontend',
-        'data_cache'
-    ]
-
-    print("检查项目结构...")
-    for dir_name in required_dirs:
-        if not Path(dir_name).exists():
-            print(f"  错误: 缺少目录 '{dir_name}'")
-            return False
-        print(f"  ✓ {dir_name}")
-
-    # 检查数据文件
-    from backend.config import Config
-    config = Config()
-
-    # 检查AIS文件
-    ais_files = config.get_ais_files()
-    if ais_files:
-        for ais_file in ais_files:
-            file_size = ais_file.stat().st_size
-            print(f"  ✓ AIS文件: {ais_file.name} ({file_size} 字节)")
-
-            # 显示文件格式信息
-            try:
-                with open(ais_file, 'r', encoding='utf-8') as f:
-                    first_line = f.readline().strip()
-                    if 'MMSI' in first_line:
-                        print(f"    格式: CSV")
-                    elif first_line.startswith('!AIVDM') or first_line.startswith('!AIVDO'):
-                        print(f"    格式: NMEA")
-                    else:
-                        print(f"    格式: 未知")
-            except Exception as e:
-                print(f"    警告: 无法读取文件格式: {e}")
-    else:
-        print(f"  警告: 未找到任何AIS文件")
-        print(f"  请将AIS文件放入 s_data/ 目录，支持以下格式:")
-        print(f"    - AIS.txt (NMEA格式)")
-        print(f"    - AIS.csv (CSV格式)")
-
-    # 检查ADS-B文件
-    adsb_files = config.get_adsb_files()
-    if adsb_files:
-        for adsb_file in adsb_files:
-            file_size = adsb_file.stat().st_size
-            print(f"  ✓ ADS-B文件: {adsb_file.name} ({file_size} 字节)")
-
-            # 显示文件格式信息
-            try:
-                with open(adsb_file, 'r', encoding='utf-8') as f:
-                    first_line = f.readline().strip()
-                    if first_line.startswith('{') and 'aircraft_id' in first_line:
-                        print(f"    格式: JSONL")
-                    elif 'flight' in first_line and 'tail_number' in first_line:
-                        print(f"    格式: CSV")
-                    else:
-                        print(f"    格式: 未知")
-            except Exception as e:
-                print(f"    警告: 无法读取文件格式: {e}")
-    else:
-        print(f"  警告: 未找到任何ADS-B文件")
-        print(f"  请将ADS-B文件放入 s_data/ 目录，支持以下格式:")
-        print(f"    - ADSB.jsonl (JSONL格式)")
-        print(f"    - ADSB.csv (CSV格式)")
-
-    # 如果没有数据文件，警告但不阻止启动
-    if not ais_files and not adsb_files:
-        print(f"  严重警告: 未找到任何数据文件!")
-        print(f"  系统可能无法正常工作")
-
-    return True
-
-
-def install_requirements():
-    """安装Python依赖"""
-    print("\n安装Python依赖...")
-    if not Path('requirements.txt').exists():
-        print("  错误: 找不到 requirements.txt")
-        return False
-
-    try:
-        # 使用当前Python解释器安装依赖
-        result = subprocess.run(
-            [sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'],
-            capture_output=True,
-            text=True
-        )
-
-        if result.returncode == 0:
-            print("  ✓ 依赖安装完成")
-            return True
-        else:
-            print(f"  错误: 安装依赖失败")
-            print(f"  错误信息: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"  错误: 安装依赖失败 - {e}")
-        return False
-
-
 def start_backend():
     """启动后端服务"""
     print("\n启动后端服务...")
@@ -230,25 +124,6 @@ def main():
 
     # 清理旧缓存
     cleanup_cache()
-
-    # 检查项目结构
-    if not check_dependencies():
-        print("\n项目结构不完整，请检查目录和文件。")
-        response = input("是否继续启动? (y/n): ")
-        if response.lower() != 'y':
-            sys.exit(1)
-
-    # 安装依赖
-    print("\n是否安装Python依赖? (y/n)")
-    response = input("> ").strip().lower()
-    if response == 'y':
-        if not install_requirements():
-            print("\n依赖安装失败，请手动安装。")
-            response = input("是否继续? (y/n): ")
-            if response.lower() != 'y':
-                sys.exit(1)
-    else:
-        print("跳过依赖安装...")
 
     # 启动后端
     if not start_backend():
