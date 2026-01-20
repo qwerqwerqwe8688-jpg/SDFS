@@ -155,11 +155,12 @@ class MapVisualization {
     }
 
     // 创建AIS弹出窗口内容
+    // 在createAisPopupContent方法中添加CSV字段显示
     createAisPopupContent(aisData) {
         const isOnline = dataHandler.isDataPointOnline(aisData.timestamp);
 
-        return `
-            <div style="min-width: 200px; font-family: Arial, sans-serif;">
+        let popupHtml = `
+            <div style="min-width: 250px; font-family: Arial, sans-serif;">
                 <div style="
                     background-color: ${isOnline ? '#3498db' : '#95a5a6'};
                     color: white;
@@ -171,19 +172,48 @@ class MapVisualization {
                     船舶信息 (AIS)
                 </div>
                 <p><strong>MMSI:</strong> ${aisData.mmsi}</p>
+                <p><strong>船名:</strong> ${aisData.vessel_name || '未知'}</p>
                 <p><strong>位置:</strong><br>
                    ${aisData.latitude.toFixed(6)}°N,<br>
                    ${aisData.longitude.toFixed(6)}°E</p>
                 <p><strong>航速:</strong> ${aisData.sog.toFixed(1)} 节</p>
                 <p><strong>航向:</strong> ${aisData.cog.toFixed(1)}°</p>
+                <p><strong>船舶类型:</strong> ${aisData.vessel_type}</p>
+        `;
+
+        // 添加CSV特有的字段（如果存在）
+        if (aisData.imo && aisData.imo !== 'unknown') {
+            popupHtml += `<p><strong>IMO:</strong> ${aisData.imo}</p>`;
+        }
+        if (aisData.call_sign && aisData.call_sign !== 'unknown') {
+            popupHtml += `<p><strong>呼号:</strong> ${aisData.call_sign}</p>`;
+        }
+        if (aisData.status && aisData.status !== 'unknown') {
+            popupHtml += `<p><strong>状态码:</strong> ${aisData.status}</p>`;
+        }
+        if (aisData.length > 0) {
+            popupHtml += `<p><strong>尺寸:</strong> ${aisData.length.toFixed(1)}×${aisData.width.toFixed(1)}m</p>`;
+        }
+        if (aisData.draft > 0) {
+            popupHtml += `<p><strong>吃水:</strong> ${aisData.draft.toFixed(1)}m</p>`;
+        }
+        if (aisData.cargo && aisData.cargo !== 'unknown') {
+            popupHtml += `<p><strong>货物:</strong> ${aisData.cargo}</p>`;
+        }
+
+        popupHtml += `
+                <p><strong>航行状态:</strong> ${aisData.nav_status}</p>
                 <p><strong>状态:</strong>
                     <span style="color: ${isOnline ? '#27ae60' : '#e74c3c'}">
                         ${isOnline ? '在线' : '离线'}
                     </span>
                 </p>
+                <p><strong>时间:</strong> ${new Date(aisData.timestamp).toLocaleString()}</p>
                 <p><small>点击标记查看详细信息</small></p>
             </div>
         `;
+
+        return popupHtml;
     }
 
     // 创建ADS-B弹出窗口内容

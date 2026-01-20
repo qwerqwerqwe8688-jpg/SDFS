@@ -81,7 +81,8 @@ def health_check():
     """健康检查接口"""
     try:
         # 检查数据文件是否存在
-        ais_exists = config.AIS_FILE.exists()
+        ais_nmea_exists = config.AIS_NMEA_FILE.exists()
+        ais_csv_exists = config.AIS_CSV_FILE.exists()
         adsb_exists = config.ADSB_FILE.exists()
 
         # 检查数据状态
@@ -92,14 +93,16 @@ def health_check():
             'service': 'SDFS Data Service',
             'timestamp': datetime.now().isoformat(),
             'data_files': {
-                'ais': ais_exists,
+                'ais_nmea': ais_nmea_exists,
+                'ais_csv': ais_csv_exists,
                 'adsb': adsb_exists
             },
             'data_status': {
                 'processed': data_ready,
                 'last_update': last_update_time.isoformat() if last_update_time else None,
                 'ais_count': processed_data.get('metadata', {}).get('ais_count', 0) if data_ready else 0,
-                'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0) if data_ready else 0
+                'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0) if data_ready else 0,
+                'ais_by_format': processed_data.get('metadata', {}).get('ais_by_format', {}) if data_ready else {}
             },
             'cache': {
                 'exists': config.PROCESSED_DATA_CACHE.exists(),
@@ -122,48 +125,87 @@ def debug_ais():
     try:
         decoder = AISDecoder()
 
-        # 读取前50行进行测试
-        lines = []
-        with open(config.AIS_FILE, 'r', encoding='utf-8') as f:
-            for i in range(50):
-                line = f.readline()
-                if not line:
-                    break
-                lines.append(line.strip())
-
         results = []
-        for i, line in enumerate(lines):
-            try:
-                decoded = decoder._decode_single_message(line)
-                if decoded:
+
+        # 测试所有AIS文件
+        ais_files = config.get_ais_files()
+        for ais_file in ais_files:
+            logger.info(f"调试AIS文件: {ais_file.name}")
+
+            # 读取前50行进行测试
+            lines = []
+            with open(ais_file, 'r', encoding='utf-8') as f:
+                for i in range(50):
+                    line = f.readline()
+                    if not line:
+                        break
+                    lines.append(line.strip())
+
+            for i, line in enumerate(lines, 1):
+                try:
+                    decoded = decoder._decode_single_nmea_message(line) if line.startswith('!AIVDM') or line.startswith(
+                        '!AIVDO') else None
+                    if decoded:
+                        results.append({
+                            'file': ais_file.name,
+                            'line_number': i,
+                            'line': line[:100] + '...' if len(line) > 100 else line,
+                            'decoded': decoded.to_dict(),
+                            'success': True
+                        })
+                    else:
+                        # 尝试解析为CSV格式
+                        if ',' in line and 'MMSI' not in line:  # 不是表头
+                            parts = line.split(',')
+                            if len(parts) >= 16:  # CSV格式有16列
+                                results.append({
+                                    'file': ais_file.name,
+                                    'line_number': i,
+                                    'line': line[:100] + '...' if len(line) > 100 else line,
+                                    'success': True,
+                                    'decoded': {
+                                        'mmsi': parts[0],
+                                        'latitude': float(parts[2]) if parts[2] else 0,
+                                        'longitude': float(parts[3]) if parts[3] else 0,
+                                        'sog': float(parts[4]) if parts[4] else 0,
+                                        'cog': float(parts[5]) if parts[5] else 0,
+                                        'data_type': 'csv'
+                                    }
+                                })
+                            else:
+                                results.append({
+                                    'file': ais_file.name,
+                                    'line_number': i,
+                                    'line': line[:100] + '...' if len(line) > 100 else line,
+                                    'success': False,
+                                    'error': 'Invalid CSV format'
+                                })
+                        else:
+                            results.append({
+                                'file': ais_file.name,
+                                'line_number': i,
+                                'line': line[:100] + '...' if len(line) > 100 else line,
+                                'success': False,
+                                'error': 'No position data or invalid coordinates'
+                            })
+                except Exception as e:
                     results.append({
-                        'line_number': i + 1,
-                        'line': line[:100] + '...' if len(line) > 100 else line,
-                        'decoded': decoded.to_dict(),
-                        'success': True
-                    })
-                else:
-                    results.append({
-                        'line_number': i + 1,
+                        'file': ais_file.name,
+                        'line_number': i,
                         'line': line[:100] + '...' if len(line) > 100 else line,
                         'success': False,
-                        'error': 'No position data or invalid coordinates'
+                        'error': str(e)
                     })
-            except Exception as e:
-                results.append({
-                    'line_number': i + 1,
-                    'line': line[:100] + '...' if len(line) > 100 else line,
-                    'success': False,
-                    'error': str(e)
-                })
 
+        successful_decodes = len([r for r in results if r['success']])
         return jsonify({
             'success': True,
             'results': results,
-            'total_lines': len(lines),
-            'successful_decodes': len([r for r in results if r['success']]),
-            'failed_decodes': len([r for r in results if not r['success']]),
-            'success_rate': f"{(len([r for r in results if r['success']]) / len(results) * 100):.1f}%" if results else "0%"
+            'total_files': len(ais_files),
+            'total_lines': len(results),
+            'successful_decodes': successful_decodes,
+            'failed_decodes': len(results) - successful_decodes,
+            'success_rate': f"{(successful_decodes / len(results) * 100):.1f}%" if results else "0%"
         })
 
     except Exception as e:
@@ -238,6 +280,7 @@ def get_data_stats():
         stats = {
             'total_records': processed_data.get('metadata', {}).get('total_records', 0),
             'ais_count': processed_data.get('metadata', {}).get('ais_count', 0),
+            'ais_by_format': processed_data.get('metadata', {}).get('ais_by_format', {}),
             'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0),
             'coverage_layers_count': len(processed_data.get('coverage_layers', [])),
             'status_summary': processed_data.get('status_summary', {}),
@@ -298,7 +341,8 @@ def update_data():
             'data_stats': {
                 'total_records': processed_data.get('metadata', {}).get('total_records', 0),
                 'ais_count': processed_data.get('metadata', {}).get('ais_count', 0),
-                'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0)
+                'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0),
+                'ais_by_format': processed_data.get('metadata', {}).get('ais_by_format', {})
             }
         })
 
@@ -387,26 +431,40 @@ def get_system_info():
             except:
                 return 0
 
+        # 计算文件大小
+        def get_file_size(file_path):
+            try:
+                if file_path.exists():
+                    return file_path.stat().st_size
+                return 0
+            except:
+                return 0
+
         info = {
-            'backend_version': '2.0',
+            'backend_version': '2.1',
             'python_version': sys.version,
             'data_directory': str(config.DATA_DIR),
             'cache_directory': str(config.CACHE_DIR),
             'data_files': {
-                'ais': {
-                    'exists': config.AIS_FILE.exists(),
-                    'size': config.AIS_FILE.stat().st_size if config.AIS_FILE.exists() else 0,
-                    'lines': count_lines(config.AIS_FILE)
+                'ais_nmea': {
+                    'exists': config.AIS_NMEA_FILE.exists(),
+                    'size': get_file_size(config.AIS_NMEA_FILE),
+                    'lines': count_lines(config.AIS_NMEA_FILE)
+                },
+                'ais_csv': {
+                    'exists': config.AIS_CSV_FILE.exists(),
+                    'size': get_file_size(config.AIS_CSV_FILE),
+                    'lines': count_lines(config.AIS_CSV_FILE)
                 },
                 'adsb': {
                     'exists': config.ADSB_FILE.exists(),
-                    'size': config.ADSB_FILE.stat().st_size if config.ADSB_FILE.exists() else 0,
+                    'size': get_file_size(config.ADSB_FILE),
                     'lines': count_lines(config.ADSB_FILE)
                 }
             },
             'cache': {
                 'exists': config.PROCESSED_DATA_CACHE.exists(),
-                'size': config.PROCESSED_DATA_CACHE.stat().st_size if config.PROCESSED_DATA_CACHE.exists() else 0,
+                'size': get_file_size(config.PROCESSED_DATA_CACHE),
                 'temp_exists': config.PROCESSED_DATA_CACHE.with_suffix('.tmp').exists(),
                 'bak_exists': config.PROCESSED_DATA_CACHE.with_suffix('.bak').exists()
             },
@@ -414,6 +472,7 @@ def get_system_info():
                 'processed': processed_data is not None,
                 'last_update': last_update_time.isoformat() if last_update_time else None,
                 'ais_count': processed_data.get('metadata', {}).get('ais_count', 0) if processed_data else 0,
+                'ais_by_format': processed_data.get('metadata', {}).get('ais_by_format', {}) if processed_data else {},
                 'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0) if processed_data else 0
             }
         }
@@ -465,6 +524,7 @@ def get_cache_content():
             'data_preview': {
                 'metadata': data.get('metadata') if data else None,
                 'ais_count': len(data.get('ais_data', [])) if data else 0,
+                'ais_by_format': data.get('metadata', {}).get('ais_by_format', {}) if data else {},
                 'adsb_count': len(data.get('adsb_data', [])) if data else 0
             } if data else None
         })
@@ -488,22 +548,24 @@ if __name__ == '__main__':
     logger.info(f"前端目录: {app.static_folder}")
 
     # 检查数据文件
-    if not config.AIS_FILE.exists():
-        logger.warning(f"警告: AIS文件不存在: {config.AIS_FILE}")
+    ais_files = config.get_ais_files()
+    if not ais_files:
+        logger.warning(f"警告: 未找到任何AIS文件")
     else:
-        file_size = config.AIS_FILE.stat().st_size
-        logger.info(f"AIS文件大小: {file_size} 字节")
+        for ais_file in ais_files:
+            file_size = ais_file.stat().st_size
+            logger.info(f"AIS文件: {ais_file.name} 大小: {file_size} 字节")
 
-        # 显示文件信息
-        try:
-            with open(config.AIS_FILE, 'r', encoding='utf-8') as f:
-                first_lines = [f.readline().strip() for _ in range(3) if f.readline()]
-                if first_lines:
-                    logger.info("AIS文件前3行:")
-                    for i, line in enumerate(first_lines):
-                        logger.info(f"  行{i + 1}: {line[:80]}...")
-        except Exception as e:
-            logger.warning(f"读取AIS文件示例时出错: {e}")
+            # 显示文件信息
+            try:
+                with open(ais_file, 'r', encoding='utf-8') as f:
+                    first_lines = [f.readline().strip() for _ in range(3) if f.readline()]
+                    if first_lines:
+                        logger.info(f"{ais_file.name} 前3行:")
+                        for i, line in enumerate(first_lines):
+                            logger.info(f"  行{i + 1}: {line[:80]}...")
+            except Exception as e:
+                logger.warning(f"读取AIS文件示例时出错: {e}")
 
     if not config.ADSB_FILE.exists():
         logger.warning(f"警告: ADS-B文件不存在: {config.ADSB_FILE}")

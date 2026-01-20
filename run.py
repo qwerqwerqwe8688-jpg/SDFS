@@ -28,13 +28,46 @@ def check_dependencies():
         print(f"  ✓ {dir_name}")
 
     # 检查数据文件
-    data_files = ['s_data/AIS.txt', 's_data/ADSB.jsonl']
-    for file_path in data_files:
-        if not Path(file_path).exists():
-            print(f"  警告: 数据文件 '{file_path}' 不存在")
-        else:
-            file_size = Path(file_path).stat().st_size
-            print(f"  ✓ {file_path} ({file_size} 字节)")
+    from backend.config import Config
+    config = Config()
+
+    # 检查AIS文件
+    ais_files = config.get_ais_files()
+    if ais_files:
+        for ais_file in ais_files:
+            file_size = ais_file.stat().st_size
+            print(f"  ✓ AIS文件: {ais_file.name} ({file_size} 字节)")
+
+            # 显示文件格式信息
+            try:
+                with open(ais_file, 'r', encoding='utf-8') as f:
+                    first_line = f.readline().strip()
+                    if 'MMSI' in first_line:
+                        print(f"    格式: CSV")
+                    elif first_line.startswith('!AIVDM') or first_line.startswith('!AIVDO'):
+                        print(f"    格式: NMEA")
+                    else:
+                        print(f"    格式: 未知")
+            except Exception as e:
+                print(f"    警告: 无法读取文件格式: {e}")
+    else:
+        print(f"  警告: 未找到任何AIS文件")
+        print(f"  请将AIS文件放入 s_data/ 目录，支持以下格式:")
+        print(f"    - AIS.txt (NMEA格式)")
+        print(f"    - AIS.csv (CSV格式)")
+
+    # 检查ADS-B文件
+    if config.ADSB_FILE.exists():
+        file_size = config.ADSB_FILE.stat().st_size
+        print(f"  ✓ ADS-B文件: {config.ADSB_FILE.name} ({file_size} 字节)")
+    else:
+        print(f"  警告: ADS-B文件不存在: {config.ADSB_FILE}")
+        print(f"  请在 s_data/ 目录中创建 ADSB.jsonl 文件")
+
+    # 如果没有数据文件，警告但不阻止启动
+    if not ais_files and not config.ADSB_FILE.exists():
+        print(f"  严重警告: 未找到任何数据文件!")
+        print(f"  系统可能无法正常工作")
 
     return True
 
@@ -170,7 +203,11 @@ def cleanup_cache():
 def main():
     """主函数"""
     print("=" * 60)
-    print("SDFS - 数据资源地图可视化系统")
+    print("SDFS - 数据资源地图可视化系统 v2.2")
+    print("支持同时处理多个数据文件:")
+    print("  - AIS.txt (NMEA格式)")
+    print("  - AIS.csv (CSV格式)")
+    print("  - ADSB.jsonl (JSONL格式)")
     print("=" * 60)
 
     # 清理旧缓存
@@ -179,7 +216,9 @@ def main():
     # 检查项目结构
     if not check_dependencies():
         print("\n项目结构不完整，请检查目录和文件。")
-        sys.exit(1)
+        response = input("是否继续启动? (y/n): ")
+        if response.lower() != 'y':
+            sys.exit(1)
 
     # 安装依赖
     print("\n是否安装Python依赖? (y/n)")
@@ -209,13 +248,19 @@ def main():
     print("=" * 60)
     print("\n使用说明:")
     print("1. 首次启动请点击'加载数据'按钮")
-    print("2. 点击'更新状态'按钮可以重新扫描数据文件")
-    print("3. 使用控制面板过滤不同类型的数据")
-    print("4. 点击地图上的标记查看详细信息")
+    print("2. 系统会自动扫描并处理所有数据文件")
+    print("3. 点击'更新状态'按钮可以重新扫描数据文件")
+    print("4. 使用控制面板过滤不同类型的数据")
+    print("5. 点击地图上的标记查看详细信息")
+    print("\n支持的数据文件:")
+    print("- s_data/AIS.txt (NMEA格式)")
+    print("- s_data/AIS.csv (CSV格式)")
+    print("- s_data/ADSB.jsonl (JSONL格式)")
     print("\n故障排除:")
     print("1. 如果数据加载失败，尝试点击'更新状态'按钮")
     print("2. 检查浏览器控制台是否有错误")
     print("3. 确保s_data目录中有正确的数据文件")
+    print("4. 查看后端日志获取详细错误信息")
     print("\n按 Ctrl+C 停止系统")
 
     try:

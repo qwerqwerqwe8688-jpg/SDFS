@@ -1,5 +1,5 @@
-from dataclasses import dataclass, asdict
-from typing import Optional, Dict, Any
+from dataclasses import dataclass, asdict, field
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 import json
 
@@ -17,6 +17,17 @@ class AISData:
     vessel_type: str
     timestamp: datetime
     data_type: str = "ais"
+    # CSV格式的扩展字段
+    vessel_name: str = "unknown"
+    imo: str = "unknown"
+    call_sign: str = "unknown"
+    status: str = "unknown"
+    length: float = 0.0
+    width: float = 0.0
+    draft: float = 0.0
+    cargo: str = "unknown"
+    transceiver_class: str = "unknown"
+    base_date_time: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         result = asdict(self)

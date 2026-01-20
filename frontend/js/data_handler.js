@@ -174,20 +174,47 @@ class DataHandler {
     }
 
     // 格式化数据点信息
+    // 在formatDataPointInfo方法中添加对CSV格式AIS数据的显示
     formatDataPointInfo(dataPoint) {
         const isOnline = this.isDataPointOnline(dataPoint.timestamp);
 
         let info = '';
         if (dataPoint.data_type === 'ais') {
+            // 判断是否为CSV格式（包含额外字段）
+            const isCsvFormat = dataPoint.vessel_name !== undefined && dataPoint.vessel_name !== 'unknown';
+
             info = `
                 <div class="data-item">
-                    <h4>船舶信息 (AIS)</h4>
+                    <h4>船舶信息 (AIS${isCsvFormat ? ' - CSV格式' : ' - NMEA格式'})</h4>
                     <p><strong>MMSI:</strong> ${dataPoint.mmsi}</p>
+            `;
+
+            if (isCsvFormat) {
+                info += `
+                    <p><strong>船名:</strong> ${dataPoint.vessel_name}</p>
+                    <p><strong>呼号:</strong> ${dataPoint.call_sign || '未知'}</p>
+                    <p><strong>IMO:</strong> ${dataPoint.imo || '未知'}</p>
+                `;
+            }
+
+            info += `
                     <p><strong>位置:</strong> ${dataPoint.latitude.toFixed(6)}, ${dataPoint.longitude.toFixed(6)}</p>
                     <p><strong>航速:</strong> ${dataPoint.sog.toFixed(1)} 节</p>
                     <p><strong>航向:</strong> ${dataPoint.cog.toFixed(1)}°</p>
                     <p><strong>船舶类型:</strong> ${dataPoint.vessel_type}</p>
                     <p><strong>航行状态:</strong> ${dataPoint.nav_status}</p>
+            `;
+
+            if (isCsvFormat) {
+                info += `
+                    <p><strong>尺寸:</strong> ${dataPoint.length ? dataPoint.length.toFixed(1) : '未知'}×${dataPoint.width ? dataPoint.width.toFixed(1) : '未知'}m</p>
+                    <p><strong>吃水:</strong> ${dataPoint.draft ? dataPoint.draft.toFixed(1) + 'm' : '未知'}</p>
+                    <p><strong>货物:</strong> ${dataPoint.cargo || '未知'}</p>
+                    <p><strong>状态码:</strong> ${dataPoint.status || '未知'}</p>
+                `;
+            }
+
+            info += `
                     <p><strong>时间:</strong> ${new Date(dataPoint.timestamp).toLocaleString()}</p>
                     <span class="status-badge ${isOnline ? 'online' : 'offline'}">
                         ${isOnline ? '在线' : '离线'}

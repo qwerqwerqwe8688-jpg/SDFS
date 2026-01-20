@@ -9,7 +9,10 @@ class Config:
 
     # 数据路径配置
     DATA_DIR = BASE_DIR / 's_data'
-    AIS_FILE = DATA_DIR / 'AIS.txt'
+
+    # 支持多个AIS文件格式
+    AIS_NMEA_FILE = DATA_DIR / 'AIS.txt'
+    AIS_CSV_FILE = DATA_DIR / 'AIS.csv'
     ADSB_FILE = DATA_DIR / 'ADSB.jsonl'
 
     # 缓存配置
@@ -27,3 +30,12 @@ class Config:
     STATUS_ONLINE = 'online'
     STATUS_OFFLINE = 'offline'
     MAX_DATA_AGE_HOURS = 24  # 数据最大有效时间（小时）
+
+    def get_ais_files(self):
+        """获取所有存在的AIS文件路径"""
+        ais_files = []
+        if self.AIS_NMEA_FILE.exists():
+            ais_files.append(self.AIS_NMEA_FILE)
+        if self.AIS_CSV_FILE.exists():
+            ais_files.append(self.AIS_CSV_FILE)
+        return ais_files

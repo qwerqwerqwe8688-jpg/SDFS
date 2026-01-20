@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 from pathlib import Path
 import hashlib
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class DataProcessor:
-    """数据处理器 - 集成AIS和ADS-B数据处理"""
+    """数据处理器 - 集成多个AIS文件和ADS-B数据处理"""
 
     def __init__(self):
         self.config = Config()
@@ -39,10 +39,9 @@ class DataProcessor:
 
         logger.info("开始处理所有数据...")
 
-        # 1. 处理AIS数据
-        logger.info("处理AIS数据...")
-        ais_data = self.ais_decoder.decode_ais_file(str(self.config.AIS_FILE))
-        logger.info(f"AIS数据解码完成，共 {len(ais_data)} 条有效位置记录")
+        # 1. 处理所有AIS数据文件
+        logger.info("处理AIS数据文件...")
+        all_ais_data = self._process_all_ais_files()
 
         # 2. 处理ADS-B数据
         logger.info("处理ADS-B数据...")
@@ -51,19 +50,43 @@ class DataProcessor:
 
         # 3. 创建资源覆盖范围
         logger.info("创建资源覆盖范围...")
-        coverage_layers = self._create_coverage_layers(ais_data, adsb_data)
+        coverage_layers = self._create_coverage_layers(all_ais_data, adsb_data)
 
         # 4. 标准化数据格式
         logger.info("标准化数据格式...")
-        standardized_data = self._standardize_data(ais_data, adsb_data, coverage_layers)
+        standardized_data = self._standardize_data(all_ais_data, adsb_data, coverage_layers)
 
         # 5. 保存到缓存
         self._save_to_cache(standardized_data)
 
         self.processed_data = standardized_data
-        logger.info(f"数据处理完成。AIS: {len(ais_data)}条, ADS-B: {len(adsb_data)}条")
+        logger.info(f"数据处理完成。AIS: {len(all_ais_data)}条, ADS-B: {len(adsb_data)}条")
 
         return standardized_data
+
+    def _process_all_ais_files(self) -> List[AISData]:
+        """处理所有AIS文件"""
+        all_ais_data = []
+        ais_files = self.config.get_ais_files()
+
+        if not ais_files:
+            logger.warning("未找到任何AIS文件")
+            return all_ais_data
+
+        logger.info(f"找到 {len(ais_files)} 个AIS文件")
+
+        for ais_file in ais_files:
+            try:
+                logger.info(f"处理AIS文件: {ais_file.name}")
+                file_data = self.ais_decoder.decode_ais_file(str(ais_file))
+                all_ais_data.extend(file_data)
+                logger.info(f"文件 {ais_file.name} 处理完成，获得 {len(file_data)} 条记录")
+            except Exception as e:
+                logger.error(f"处理AIS文件 {ais_file.name} 时出错: {str(e)}")
+                continue
+
+        logger.info(f"AIS数据总共处理完成，共 {len(all_ais_data)} 条有效位置记录")
+        return all_ais_data
 
     def _create_coverage_layers(self, ais_data: List[AISData], adsb_data: List[ADSData]) -> List[Dict[str, Any]]:
         """创建资源覆盖范围图层"""
@@ -81,7 +104,8 @@ class DataProcessor:
                 metadata={
                     "data_count": len(ais_data),
                     "update_time": datetime.now().isoformat(),
-                    "description": "船舶自动识别系统覆盖区域"
+                    "description": "船舶自动识别系统覆盖区域",
+                    "data_sources": [str(file) for file in self.config.get_ais_files()]
                 }
             )
             coverage_layers.append(ais_layer.to_dict())
@@ -173,22 +197,45 @@ class DataProcessor:
             logger.info(f"过滤掉 {len(adsb_data) - len(valid_adsb_data)} 条位置无效的ADS-B数据")
             adsb_data = valid_adsb_data
 
+        # 获取AIS文件信息
+        ais_files = self.config.get_ais_files()
+        ais_sources = [str(file) for file in ais_files]
+
+        # 分离不同格式的AIS数据
+        nmea_ais_data = []
+        csv_ais_data = []
+
+        for ais in ais_data:
+            # 根据来源判断格式（这里简化处理，实际应用中可能需要更好的判断方法）
+            if hasattr(ais, 'vessel_name') and ais.vessel_name != 'unknown':
+                csv_ais_data.append(ais)
+            else:
+                nmea_ais_data.append(ais)
+
         standardized = {
             "metadata": {
-                "version": "2.0",
+                "version": "2.1",
                 "total_records": len(ais_data) + len(adsb_data),
                 "ais_count": len(ais_data),
+                "ais_by_format": {
+                    "nmea": len(nmea_ais_data),
+                    "csv": len(csv_ais_data)
+                },
                 "adsb_count": len(adsb_data),
                 "processing_time": datetime.now().isoformat(),
                 "coordinate_system": "WGS-84",
-                "data_source": "s_data/AIS.txt and s_data/ADSB.jsonl",
+                "data_sources": {
+                    "ais_files": ais_sources,
+                    "adsb_file": str(self.config.ADSB_FILE)
+                },
                 "data_quality": {
-                    "ais_valid_percentage": f"{(len(ais_data) / (len(ais_data) + len(valid_ais_data)) * 100):.1f}%" if (
-                                                                                                                                   len(ais_data) + len(
-                                                                                                                               valid_ais_data)) > 0 else "0%",
-                    "adsb_valid_percentage": f"{(len(adsb_data) / (len(adsb_data) + len(valid_adsb_data)) * 100):.1f}%" if (
-                                                                                                                                       len(adsb_data) + len(
-                                                                                                                                   valid_adsb_data)) > 0 else "0%"
+                    "ais_valid_percentage": f"{(len(ais_data) / max(len(ais_data), 1) * 100):.1f}%",
+                    "adsb_valid_percentage": f"{(len(adsb_data) / max(len(adsb_data), 1) * 100):.1f}%"
+                },
+                "file_status": {
+                    "ais_nmea_exists": self.config.AIS_NMEA_FILE.exists(),
+                    "ais_csv_exists": self.config.AIS_CSV_FILE.exists(),
+                    "adsb_exists": self.config.ADSB_FILE.exists()
                 }
             },
             "ais_data": [ais.to_dict() for ais in ais_data],
@@ -312,11 +359,12 @@ class DataProcessor:
         """计算数据文件的哈希值，用于检测变化"""
         hash_md5 = hashlib.md5()
 
-        # 添加AIS文件哈希
-        if self.config.AIS_FILE.exists():
-            with open(self.config.AIS_FILE, 'rb') as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
+        # 添加所有AIS文件哈希
+        for ais_file in self.config.get_ais_files():
+            if ais_file.exists():
+                with open(ais_file, 'rb') as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hash_md5.update(chunk)
 
         # 添加ADS-B文件哈希
         if self.config.ADSB_FILE.exists():

@@ -3,6 +3,8 @@ from datetime import datetime
 import logging
 from typing import List, Dict, Any
 import re
+import csv
+from pathlib import Path
 from .models import AISData
 
 logging.basicConfig(level=logging.INFO)
@@ -17,13 +19,162 @@ class AISDecoder:
 
     def decode_ais_file(self, file_path: str) -> List[AISData]:
         """
-        解码AIS文件中的所有数据
+        解码AIS文件中的所有数据，支持NMEA和CSV格式
         """
         logger.info(f"开始解码AIS文件: {file_path}")
+
+        file_path = Path(file_path)
+        if not file_path.exists():
+            logger.error(f"AIS文件不存在: {file_path}")
+            return []
+
+        # 检测文件格式
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                first_line = f.readline().strip()
+
+            if self._is_csv_format(first_line):
+                logger.info("检测到CSV格式的AIS数据")
+                return self._decode_csv_file(file_path)
+            elif self._is_nmea_format(first_line):
+                logger.info("检测到NMEA格式的AIS数据")
+                return self._decode_nmea_file(file_path)
+            else:
+                logger.warning(f"无法识别的AIS文件格式，第一行: {first_line[:100]}...")
+                # 尝试NMEA格式解码
+                return self._decode_nmea_file(file_path)
+
+        except Exception as e:
+            logger.error(f"检测文件格式时出错: {str(e)}")
+            return []
+
+    def _is_csv_format(self, first_line: str) -> bool:
+        """检查是否为CSV格式"""
+        # CSV格式通常包含逗号分隔的列名
+        csv_indicators = ['MMSI', 'BaseDateTime', 'LAT', 'LON', 'SOG', 'COG', 'Heading']
+        return any(indicator in first_line for indicator in csv_indicators)
+
+    def _is_nmea_format(self, first_line: str) -> bool:
+        """检查是否为NMEA格式"""
+        return first_line.startswith('!AIVDM') or first_line.startswith('!AIVDO')
+
+    def _decode_csv_file(self, file_path: Path) -> List[AISData]:
+        """解码CSV格式的AIS文件"""
         decoded_records = []
 
         try:
-            with open(file_path, 'r') as f:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                # 使用DictReader自动处理列名
+                csv_reader = csv.DictReader(f)
+                total_rows = 0
+                valid_count = 0
+
+                for row_num, row in enumerate(csv_reader, 1):
+                    total_rows = row_num
+
+                    try:
+                        # 解析必需字段
+                        mmsi = row.get('MMSI', '').strip()
+                        lat_str = row.get('LAT', '').strip()
+                        lon_str = row.get('LON', '').strip()
+
+                        if not mmsi or not lat_str or not lon_str:
+                            logger.debug(f"第 {row_num} 行缺少必需字段: MMSI={mmsi}, LAT={lat_str}, LON={lon_str}")
+                            continue
+
+                        # 转换数据类型
+                        try:
+                            lat = float(lat_str)
+                            lon = float(lon_str)
+                        except ValueError:
+                            logger.debug(f"第 {row_num} 行坐标格式错误: LAT={lat_str}, LON={lon_str}")
+                            continue
+
+                        # 验证坐标范围
+                        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                            logger.debug(f"第 {row_num} 行坐标超出范围: LAT={lat}, LON={lon}")
+                            continue
+
+                        # 解析可选数值字段
+                        sog = self._parse_float(row.get('SOG', '0'))
+                        cog = self._parse_float(row.get('COG', '0'))
+                        heading = self._parse_float(row.get('Heading', '0'))
+                        length = self._parse_float(row.get('Length', '0'))
+                        width = self._parse_float(row.get('Width', '0'))
+                        draft = self._parse_float(row.get('Draft', '0'))
+
+                        # 解析时间戳
+                        timestamp_str = row.get('BaseDateTime', '')
+                        if timestamp_str:
+                            try:
+                                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                            except ValueError:
+                                logger.debug(f"第 {row_num} 行时间戳格式错误: {timestamp_str}")
+                                timestamp = datetime.now()
+                        else:
+                            timestamp = datetime.now()
+
+                        # 解析船舶类型和状态
+                        vessel_type_code = row.get('VesselType', '0')
+                        try:
+                            vessel_type_code_int = int(float(vessel_type_code))
+                        except (ValueError, TypeError):
+                            vessel_type_code_int = 0
+
+                        vessel_type = self._get_vessel_type(vessel_type_code_int)
+
+                        status_code = row.get('Status', '')
+                        nav_status = self._get_nav_status_from_code(status_code)
+
+                        # 创建AIS数据对象
+                        ais_data = AISData(
+                            mmsi=mmsi,
+                            latitude=lat,
+                            longitude=lon,
+                            sog=sog,
+                            cog=cog,
+                            heading=heading,
+                            nav_status=nav_status,
+                            vessel_type=vessel_type,
+                            timestamp=timestamp,
+                            data_type="ais",
+                            vessel_name=row.get('VesselName', 'unknown').strip(),
+                            imo=row.get('IMO', 'unknown').strip(),
+                            call_sign=row.get('CallSign', 'unknown').strip(),
+                            status=row.get('Status', 'unknown').strip(),
+                            length=length,
+                            width=width,
+                            draft=draft,
+                            cargo=row.get('Cargo', 'unknown').strip(),
+                            transceiver_class=row.get('TransceiverClass', 'unknown').strip(),
+                            base_date_time=timestamp_str
+                        )
+
+                        decoded_records.append(ais_data)
+                        valid_count += 1
+
+                        # 每处理1000条记录输出一次进度
+                        if row_num % 1000 == 0:
+                            logger.info(f"已处理 {row_num} 行CSV数据，有效: {valid_count}")
+
+                    except Exception as e:
+                        logger.debug(f"处理第 {row_num} 行CSV数据时出错: {str(e)}")
+                        continue
+
+                logger.info(f"CSV文件处理完成，总行数: {total_rows}, 有效记录: {valid_count}")
+
+        except Exception as e:
+            logger.error(f"读取CSV文件时出错: {str(e)}")
+            return []
+
+        return decoded_records
+
+    def _decode_nmea_file(self, file_path: Path) -> List[AISData]:
+        """解码NMEA格式的AIS文件"""
+        decoded_records = []
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
             lines = content.strip().split('\n')
@@ -79,7 +230,7 @@ class AISDecoder:
                             # 解码完整的多片段消息
                             for fragment in fragments:
                                 try:
-                                    ais_data = self._decode_single_message(fragment)
+                                    ais_data = self._decode_single_nmea_message(fragment)
                                     if ais_data:
                                         decoded_records.append(ais_data)
                                 except Exception as e:
@@ -89,7 +240,7 @@ class AISDecoder:
                             del multi_part_messages[message_key]
                     else:
                         # 单片段消息，直接解码
-                        ais_data = self._decode_single_message(line)
+                        ais_data = self._decode_single_nmea_message(line)
                         if ais_data:
                             decoded_records.append(ais_data)
 
@@ -116,8 +267,8 @@ class AISDecoder:
         logger.info(f"AIS解码完成，共获得 {len(decoded_records)} 条有效位置记录")
         return decoded_records
 
-    def _decode_single_message(self, nmea_string: str) -> AISData:
-        """解码单条AIS消息"""
+    def _decode_single_nmea_message(self, nmea_string: str) -> AISData:
+        """解码单条NMEA格式的AIS消息"""
         try:
             # 使用pyais解码
             decoded = pyais.decode(nmea_string)
@@ -170,6 +321,24 @@ class AISDecoder:
             return None
 
         return None
+
+    def _parse_float(self, value: str) -> float:
+        """安全地解析浮点数"""
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _get_nav_status_from_code(self, status_code: str) -> str:
+        """根据CSV状态码获取航行状态"""
+        if not status_code:
+            return "unknown"
+
+        try:
+            code = int(float(status_code))
+            return self._get_nav_status(code)
+        except (ValueError, TypeError):
+            return f"Unknown ({status_code})"
 
     def _get_nav_status(self, status_code) -> str:
         """获取航行状态"""

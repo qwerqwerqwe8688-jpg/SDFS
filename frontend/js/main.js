@@ -677,6 +677,7 @@ function updateSystemStatus(message, type = 'info') {
 }
 
 // 更新界面统计信息
+// 在updateStatsDisplay函数中添加对AIS格式统计的显示
 function updateStatsDisplay(stats) {
     if (!stats) return;
 
@@ -684,6 +685,32 @@ function updateStatsDisplay(stats) {
     document.getElementById('data-count').textContent = `数据总数: ${stats.total_records || 0}`;
     document.getElementById('ais-count').textContent = `(${stats.ais_count || 0})`;
     document.getElementById('adsb-count').textContent = `(${stats.adsb_count || 0})`;
+
+    // 更新AIS格式统计
+    if (stats.ais_by_format) {
+        const aisFormatStats = document.getElementById('ais-format-stats');
+        if (!aisFormatStats) {
+            // 如果没有显示元素，创建一个
+            const statsDisplay = document.querySelector('.stats-display');
+            const formatStats = document.createElement('div');
+            formatStats.id = 'ais-format-stats';
+            formatStats.className = 'stat-item';
+            formatStats.innerHTML = `
+                <div class="stat-item">
+                    <span class="stat-label">NMEA格式:</span>
+                    <span id="nmea-count" class="stat-value">${stats.ais_by_format.nmea || 0}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">CSV格式:</span>
+                    <span id="csv-count" class="stat-value">${stats.ais_by_format.csv || 0}</span>
+                </div>
+            `;
+            statsDisplay.appendChild(formatStats);
+        } else {
+            document.getElementById('nmea-count').textContent = stats.ais_by_format.nmea || 0;
+            document.getElementById('csv-count').textContent = stats.ais_by_format.csv || 0;
+        }
+    }
 
     // 更新状态统计
     if (stats.status_summary) {
@@ -698,20 +725,8 @@ function updateStatsDisplay(stats) {
 
     // 更新最后更新时间
     if (stats.last_update) {
-        const lastUpdate = new Date(stats.last_update);
-        const now = new Date();
-        const diffMinutes = Math.floor((now - lastUpdate) / (1000 * 60));
-
-        let timeText;
-        if (diffMinutes < 1) {
-            timeText = '刚刚';
-        } else if (diffMinutes < 60) {
-            timeText = `${diffMinutes}分钟前`;
-        } else {
-            timeText = lastUpdate.toLocaleString();
-        }
-
-        document.getElementById('last-update').textContent = `最后更新: ${timeText}`;
+        document.getElementById('last-update').textContent =
+            `最后更新: ${new Date(stats.last_update).toLocaleString()}`;
     }
 }
 

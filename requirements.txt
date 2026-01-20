@@ -1,7 +1,7 @@
 Flask==2.3.3
 Flask-CORS==4.0.0
 geographiclib==2.0
-pyais==2.6.0  # 更新到更稳定的版本
+pyais==2.6.0
 numpy==1.24.3
 python-dateutil==2.8.2
 requests==2.31.0
