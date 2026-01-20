@@ -1,0 +1,327 @@
+import json
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, List, Any
+from pathlib import Path
+import hashlib
+
+from .config import Config
+from .ais_decoder import AISDecoder
+from .adsb_processor import ADSBProcessor
+from .models import AISData, ADSData, ResourceCoverage, DataEncoder
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class DataProcessor:
+    """数据处理器 - 集成AIS和ADS-B数据处理"""
+
+    def __init__(self):
+        self.config = Config()
+        self.ais_decoder = AISDecoder()
+        self.adsb_processor = ADSBProcessor()
+        self.processed_data = None
+        self.data_hash = None
+
+    def process_all_data(self, force_update: bool = False) -> Dict[str, Any]:
+        """
+        处理所有数据，返回标准化格式
+        """
+        # 检查缓存是否存在且有效
+        if not force_update:
+            cache_data = self._load_cached_data()
+            if cache_data is not None:
+                logger.info(f"使用缓存的已处理数据")
+                logger.info(
+                    f"缓存数据统计: AIS={cache_data.get('metadata', {}).get('ais_count', 0)}, ADS-B={cache_data.get('metadata', {}).get('adsb_count', 0)}")
+                return cache_data
+
+        logger.info("开始处理所有数据...")
+
+        # 1. 处理AIS数据
+        logger.info("处理AIS数据...")
+        ais_data = self.ais_decoder.decode_ais_file(str(self.config.AIS_FILE))
+        logger.info(f"AIS数据解码完成，共 {len(ais_data)} 条有效位置记录")
+
+        # 2. 处理ADS-B数据
+        logger.info("处理ADS-B数据...")
+        adsb_data = self.adsb_processor.process_adsb_file(str(self.config.ADSB_FILE))
+        logger.info(f"ADS-B数据处理完成，共 {len(adsb_data)} 条有效记录")
+
+        # 3. 创建资源覆盖范围
+        logger.info("创建资源覆盖范围...")
+        coverage_layers = self._create_coverage_layers(ais_data, adsb_data)
+
+        # 4. 标准化数据格式
+        logger.info("标准化数据格式...")
+        standardized_data = self._standardize_data(ais_data, adsb_data, coverage_layers)
+
+        # 5. 保存到缓存
+        self._save_to_cache(standardized_data)
+
+        self.processed_data = standardized_data
+        logger.info(f"数据处理完成。AIS: {len(ais_data)}条, ADS-B: {len(adsb_data)}条")
+
+        return standardized_data
+
+    def _create_coverage_layers(self, ais_data: List[AISData], adsb_data: List[ADSData]) -> List[Dict[str, Any]]:
+        """创建资源覆盖范围图层"""
+        coverage_layers = []
+
+        # AIS覆盖范围
+        if ais_data:
+            ais_coverage = self._calculate_coverage_area([(d.longitude, d.latitude) for d in ais_data])
+            ais_layer = ResourceCoverage(
+                resource_id="ais_coverage_layer",
+                data_type="ais",
+                coordinates=ais_coverage,
+                status="online",
+                label="AIS Coverage Area",
+                metadata={
+                    "data_count": len(ais_data),
+                    "update_time": datetime.now().isoformat(),
+                    "description": "船舶自动识别系统覆盖区域"
+                }
+            )
+            coverage_layers.append(ais_layer.to_dict())
+
+        # ADS-B覆盖范围
+        if adsb_data:
+            adsb_coverage = self._calculate_coverage_area([(d.longitude, d.latitude) for d in adsb_data])
+            adsb_layer = ResourceCoverage(
+                resource_id="adsb_coverage_layer",
+                data_type="adsb",
+                coordinates=adsb_coverage,
+                status="online",
+                label="ADS-B Coverage Area",
+                metadata={
+                    "data_count": len(adsb_data),
+                    "update_time": datetime.now().isoformat(),
+                    "description": "广播式自动相关监视覆盖区域"
+                }
+            )
+            coverage_layers.append(adsb_layer.to_dict())
+
+        return coverage_layers
+
+    def _calculate_coverage_area(self, coordinates: List[tuple]) -> List[List[float]]:
+        """计算覆盖区域（简化版本：使用凸包或边界矩形）"""
+        if not coordinates:
+            return []
+
+        # 过滤无效坐标
+        valid_coords = []
+        for lon, lat in coordinates:
+            if -180 <= lon <= 180 and -90 <= lat <= 90:
+                valid_coords.append((lon, lat))
+
+        if not valid_coords:
+            return []
+
+        # 计算边界矩形
+        lons = [c[0] for c in valid_coords]
+        lats = [c[1] for c in valid_coords]
+
+        min_lon, max_lon = min(lons), max(lons)
+        min_lat, max_lat = min(lats), max(lats)
+
+        # 扩展边界，使覆盖区域更明显
+        lon_margin = max((max_lon - min_lon) * 0.1, 0.01)
+        lat_margin = max((max_lat - min_lat) * 0.1, 0.01)
+
+        min_lon -= lon_margin
+        max_lon += lon_margin
+        min_lat -= lat_margin
+        max_lat += lat_margin
+
+        # 确保边界在有效范围内
+        min_lon = max(min_lon, -180)
+        max_lon = min(max_lon, 180)
+        min_lat = max(min_lat, -90)
+        max_lat = min(max_lat, 90)
+
+        # 创建矩形区域
+        return [
+            [min_lon, min_lat],
+            [max_lon, min_lat],
+            [max_lon, max_lat],
+            [min_lon, max_lat],
+            [min_lon, min_lat]  # 闭合多边形
+        ]
+
+    def _standardize_data(self, ais_data: List[AISData], adsb_data: List[ADSData],
+                          coverage_layers: List[Dict]) -> Dict[str, Any]:
+        """标准化数据格式"""
+        # 过滤无效的AIS数据（位置为0,0的）
+        valid_ais_data = []
+        for ais in ais_data:
+            if ais.latitude != 0 and ais.longitude != 0:
+                valid_ais_data.append(ais)
+
+        if len(valid_ais_data) < len(ais_data):
+            logger.info(f"过滤掉 {len(ais_data) - len(valid_ais_data)} 条位置无效的AIS数据")
+            ais_data = valid_ais_data
+
+        # 过滤无效的ADS-B数据
+        valid_adsb_data = []
+        for adsb in adsb_data:
+            if adsb.latitude != 0 and adsb.longitude != 0:
+                valid_adsb_data.append(adsb)
+
+        if len(valid_adsb_data) < len(adsb_data):
+            logger.info(f"过滤掉 {len(adsb_data) - len(valid_adsb_data)} 条位置无效的ADS-B数据")
+            adsb_data = valid_adsb_data
+
+        standardized = {
+            "metadata": {
+                "version": "2.0",
+                "total_records": len(ais_data) + len(adsb_data),
+                "ais_count": len(ais_data),
+                "adsb_count": len(adsb_data),
+                "processing_time": datetime.now().isoformat(),
+                "coordinate_system": "WGS-84",
+                "data_source": "s_data/AIS.txt and s_data/ADSB.jsonl",
+                "data_quality": {
+                    "ais_valid_percentage": f"{(len(ais_data) / (len(ais_data) + len(valid_ais_data)) * 100):.1f}%" if (
+                                                                                                                                   len(ais_data) + len(
+                                                                                                                               valid_ais_data)) > 0 else "0%",
+                    "adsb_valid_percentage": f"{(len(adsb_data) / (len(adsb_data) + len(valid_adsb_data)) * 100):.1f}%" if (
+                                                                                                                                       len(adsb_data) + len(
+                                                                                                                                   valid_adsb_data)) > 0 else "0%"
+                }
+            },
+            "ais_data": [ais.to_dict() for ais in ais_data],
+            "adsb_data": [adsb.to_dict() for adsb in adsb_data],
+            "coverage_layers": coverage_layers,
+            "status_summary": {
+                "online_ais": len([ais for ais in ais_data if self._is_online(ais)]),
+                "offline_ais": len([ais for ais in ais_data if not self._is_online(ais)]),
+                "online_adsb": len([adsb for adsb in adsb_data if self._is_online(adsb)]),
+                "offline_adsb": len([adsb for adsb in adsb_data if not self._is_online(adsb)])
+            }
+        }
+
+        return standardized
+
+    def _is_online(self, data_point) -> bool:
+        """判断数据点是否在线（简化版本）"""
+        # 实际项目中应根据时间戳判断，这里使用简单逻辑
+        if hasattr(data_point, 'timestamp'):
+            try:
+                time_diff = datetime.now() - data_point.timestamp
+                return time_diff.total_seconds() < self.config.MAX_DATA_AGE_HOURS * 3600
+            except:
+                return True
+        return True
+
+    def _save_to_cache(self, data: Dict[str, Any]):
+        """保存处理后的数据到缓存"""
+        try:
+            # 确保缓存目录存在
+            self.config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+            # 创建临时文件路径
+            temp_file = self.config.PROCESSED_DATA_CACHE.with_suffix('.tmp')
+
+            # 写入临时文件
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                # 使用自定义编码器
+                json_str = json.dumps(data, cls=DataEncoder, ensure_ascii=False, indent=2)
+                f.write(json_str)
+
+            # 验证写入的数据
+            with open(temp_file, 'r', encoding='utf-8') as f:
+                test_data = json.load(f)
+                if 'metadata' not in test_data or 'ais_data' not in test_data:
+                    raise ValueError("缓存数据格式不正确")
+
+            # 重命名为正式文件
+            temp_file.replace(self.config.PROCESSED_DATA_CACHE)
+
+            file_size = self.config.PROCESSED_DATA_CACHE.stat().st_size
+            logger.info(f"数据已缓存到: {self.config.PROCESSED_DATA_CACHE} (大小: {file_size} 字节)")
+
+        except Exception as e:
+            logger.error(f"保存缓存时出错: {str(e)}")
+            # 清理临时文件
+            if 'temp_file' in locals() and temp_file.exists():
+                temp_file.unlink(missing_ok=True)
+
+    def _load_cached_data(self) -> Dict[str, Any]:
+        """从缓存加载数据"""
+        if not self.config.PROCESSED_DATA_CACHE.exists():
+            logger.info("缓存文件不存在")
+            return None
+
+        try:
+            # 检查文件大小
+            file_size = self.config.PROCESSED_DATA_CACHE.stat().st_size
+            if file_size == 0:
+                logger.warning("缓存文件为空")
+                return None
+
+            with open(self.config.PROCESSED_DATA_CACHE, 'r', encoding='utf-8') as f:
+                # 读取文件内容
+                content = f.read()
+                if not content.strip():
+                    logger.warning("缓存文件内容为空")
+                    return None
+
+                # 解析JSON
+                data = json.loads(content)
+
+            # 验证数据格式
+            if not isinstance(data, dict):
+                logger.warning("缓存数据不是有效的JSON对象")
+                return None
+
+            if 'metadata' not in data:
+                logger.warning("缓存数据缺少metadata字段")
+                return None
+
+            if 'ais_data' not in data or 'adsb_data' not in data:
+                logger.warning("缓存数据缺少数据字段")
+                return None
+
+            logger.info(f"成功加载缓存数据，大小: {file_size} 字节")
+            logger.info(f"缓存数据统计: AIS={len(data.get('ais_data', []))}, ADS-B={len(data.get('adsb_data', []))}")
+
+            return data
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"缓存文件JSON格式错误: {str(e)}")
+            # 尝试修复JSON或创建备份
+            self._backup_corrupted_cache()
+            return None
+        except Exception as e:
+            logger.error(f"加载缓存时出错: {str(e)}")
+            return None
+
+    def _backup_corrupted_cache(self):
+        """备份损坏的缓存文件"""
+        try:
+            if self.config.PROCESSED_DATA_CACHE.exists():
+                backup_file = self.config.PROCESSED_DATA_CACHE.with_suffix('.bak')
+                self.config.PROCESSED_DATA_CACHE.rename(backup_file)
+                logger.info(f"已备份损坏的缓存文件: {backup_file}")
+        except Exception as e:
+            logger.error(f"备份缓存文件时出错: {str(e)}")
+
+    def calculate_data_hash(self) -> str:
+        """计算数据文件的哈希值，用于检测变化"""
+        hash_md5 = hashlib.md5()
+
+        # 添加AIS文件哈希
+        if self.config.AIS_FILE.exists():
+            with open(self.config.AIS_FILE, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+
+        # 添加ADS-B文件哈希
+        if self.config.ADSB_FILE.exists():
+            with open(self.config.ADSB_FILE, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+
+        return hash_md5.hexdigest()

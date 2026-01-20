@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDFS - 数据资源地图可视化系统</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* Leaflet图标自定义 */
+        .ais-icon {
+            background-color: #3498db;
+            border-radius: 50%;
+            border: 2px solid white;
+        }
+        .adsb-icon {
+            background-color: #e74c3c;
+            border-radius: 50%;
+            border: 2px solid white;
+        }
+        .coverage-layer {
+            background-color: rgba(52, 152, 219, 0.3);
+            border: 2px solid #3498db;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 标题栏 -->
+        <header class="header">
+            <h1><i class="fas fa-map-marked-alt"></i> SDFS - 数据资源地图可视化系统</h1>
+            <div class="header-info">
+                <span id="last-update">最后更新: --</span>
+                <span id="data-count">数据总数: 0</span>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <div class="main-content">
+            <!-- 侧边控制面板 -->
+            <aside class="control-panel">
+                <div class="panel-section">
+                    <h3><i class="fas fa-cog"></i> 控制面板</h3>
+
+                    <div class="control-group">
+                        <button id="load-data-btn" class="btn btn-primary">
+                            <i class="fas fa-download"></i> 加载数据
+                        </button>
+                        <button id="update-data-btn" class="btn btn-warning">
+                            <i class="fas fa-sync"></i> 更新状态
+                        </button>
+                        <button id="reset-view-btn" class="btn btn-secondary">
+                            <i class="fas fa-home"></i> 重置视图
+                        </button>
+                    </div>
+
+                    <div class="control-group">
+                        <h4><i class="fas fa-filter"></i> 数据过滤</h4>
+                        <div class="filter-option">
+                            <input type="checkbox" id="filter-ais" checked>
+                            <label for="filter-ais">AIS 数据</label>
+                            <span id="ais-count" class="data-count">(0)</span>
+                        </div>
+                        <div class="filter-option">
+                            <input type="checkbox" id="filter-adsb" checked>
+                            <label for="filter-adsb">ADS-B 数据</label>
+                            <span id="adsb-count" class="data-count">(0)</span>
+                        </div>
+                        <div class="filter-option">
+                            <input type="checkbox" id="filter-coverage" checked>
+                            <label for="filter-coverage">覆盖范围</label>
+                        </div>
+                    </div>
+
+                    <div class="control-group">
+                        <h4><i class="fas fa-chart-bar"></i> 数据统计</h4>
+                        <div class="stats-display">
+                            <div class="stat-item">
+                                <span class="stat-label">在线 AIS:</span>
+                                <span id="online-ais" class="stat-value">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">离线 AIS:</span>
+                                <span id="offline-ais" class="stat-value">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">在线 ADS-B:</span>
+                                <span id="online-adsb" class="stat-value">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">离线 ADS-B:</span>
+                                <span id="offline-adsb" class="stat-value">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">覆盖图层:</span>
+                                <span id="coverage-count" class="stat-value">0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="control-group">
+                        <h4><i class="fas fa-info-circle"></i> 系统信息</h4>
+                        <div class="info-display">
+                            <div class="info-item">
+                                <span class="info-label">坐标系:</span>
+                                <span class="info-value">WGS-84</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">数据源:</span>
+                                <span class="info-value">s_data/ 目录</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">后端状态:</span>
+                                <span id="backend-status" class="status-indicator status-offline">离线</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- 地图显示区 -->
+            <main class="map-container">
+                <div id="map"></div>
+                <div class="map-controls">
+                    <div class="legend">
+                        <h4>图例</h4>
+                        <div class="legend-item">
+                            <div class="legend-color ais-legend"></div>
+                            <span>AIS 船舶</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color adsb-legend"></div>
+                            <span>ADS-B 飞机</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color online-legend"></div>
+                            <span>在线状态</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color offline-legend"></div>
+                            <span>离线状态</span>
+                        </div>
+                    </div>
+                    <div class="coordinate-display" id="coordinate-display">
+                        坐标: --
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- 底部状态栏 -->
+        <footer class="footer">
+            <div class="status-bar">
+                <span id="system-status">系统就绪</span>
+                <span class="separator">|</span>
+                <span id="processing-status">等待操作...</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- 弹窗模板 -->
+    <div id="info-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h3 id="modal-title">详细信息</h3>
+            <div id="modal-body">
+                <!-- 动态内容 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript 依赖 -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
+    <!-- 项目脚本 -->
+    <script src="js/data_handler.js"></script>
+    <script src="js/map_visualization.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
