@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 
 
+# 在check_dependencies函数中更新ADS-B文件检查部分：
 def check_dependencies():
     """检查依赖"""
     required_dirs = [
@@ -57,15 +58,32 @@ def check_dependencies():
         print(f"    - AIS.csv (CSV格式)")
 
     # 检查ADS-B文件
-    if config.ADSB_FILE.exists():
-        file_size = config.ADSB_FILE.stat().st_size
-        print(f"  ✓ ADS-B文件: {config.ADSB_FILE.name} ({file_size} 字节)")
+    adsb_files = config.get_adsb_files()
+    if adsb_files:
+        for adsb_file in adsb_files:
+            file_size = adsb_file.stat().st_size
+            print(f"  ✓ ADS-B文件: {adsb_file.name} ({file_size} 字节)")
+
+            # 显示文件格式信息
+            try:
+                with open(adsb_file, 'r', encoding='utf-8') as f:
+                    first_line = f.readline().strip()
+                    if first_line.startswith('{') and 'aircraft_id' in first_line:
+                        print(f"    格式: JSONL")
+                    elif 'flight' in first_line and 'tail_number' in first_line:
+                        print(f"    格式: CSV")
+                    else:
+                        print(f"    格式: 未知")
+            except Exception as e:
+                print(f"    警告: 无法读取文件格式: {e}")
     else:
-        print(f"  警告: ADS-B文件不存在: {config.ADSB_FILE}")
-        print(f"  请在 s_data/ 目录中创建 ADSB.jsonl 文件")
+        print(f"  警告: 未找到任何ADS-B文件")
+        print(f"  请将ADS-B文件放入 s_data/ 目录，支持以下格式:")
+        print(f"    - ADSB.jsonl (JSONL格式)")
+        print(f"    - ADSB.csv (CSV格式)")
 
     # 如果没有数据文件，警告但不阻止启动
-    if not ais_files and not config.ADSB_FILE.exists():
+    if not ais_files and not adsb_files:
         print(f"  严重警告: 未找到任何数据文件!")
         print(f"  系统可能无法正常工作")
 

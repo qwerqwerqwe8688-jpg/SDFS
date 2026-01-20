@@ -13,7 +13,10 @@ class Config:
     # 支持多个AIS文件格式
     AIS_NMEA_FILE = DATA_DIR / 'AIS.txt'
     AIS_CSV_FILE = DATA_DIR / 'AIS.csv'
-    ADSB_FILE = DATA_DIR / 'ADSB.jsonl'
+
+    # 支持多个ADS-B文件格式
+    ADSB_JSONL_FILE = DATA_DIR / 'ADSB.jsonl'
+    ADSB_CSV_FILE = DATA_DIR / 'ADSB.csv'
 
     # 缓存配置
     CACHE_DIR = BASE_DIR / 'data_cache'
@@ -39,3 +42,12 @@ class Config:
         if self.AIS_CSV_FILE.exists():
             ais_files.append(self.AIS_CSV_FILE)
         return ais_files
+
+    def get_adsb_files(self):
+        """获取所有存在的ADS-B文件路径"""
+        adsb_files = []
+        if self.ADSB_JSONL_FILE.exists():
+            adsb_files.append(self.ADSB_JSONL_FILE)
+        if self.ADSB_CSV_FILE.exists():
+            adsb_files.append(self.ADSB_CSV_FILE)
+        return adsb_files

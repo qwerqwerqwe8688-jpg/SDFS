@@ -83,7 +83,8 @@ def health_check():
         # 检查数据文件是否存在
         ais_nmea_exists = config.AIS_NMEA_FILE.exists()
         ais_csv_exists = config.AIS_CSV_FILE.exists()
-        adsb_exists = config.ADSB_FILE.exists()
+        adsb_jsonl_exists = config.ADSB_JSONL_FILE.exists()
+        adsb_csv_exists = config.ADSB_CSV_FILE.exists()
 
         # 检查数据状态
         data_ready = processed_data is not None
@@ -95,14 +96,16 @@ def health_check():
             'data_files': {
                 'ais_nmea': ais_nmea_exists,
                 'ais_csv': ais_csv_exists,
-                'adsb': adsb_exists
+                'adsb_jsonl': adsb_jsonl_exists,
+                'adsb_csv': adsb_csv_exists
             },
             'data_status': {
                 'processed': data_ready,
                 'last_update': last_update_time.isoformat() if last_update_time else None,
                 'ais_count': processed_data.get('metadata', {}).get('ais_count', 0) if data_ready else 0,
                 'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0) if data_ready else 0,
-                'ais_by_format': processed_data.get('metadata', {}).get('ais_by_format', {}) if data_ready else {}
+                'ais_by_format': processed_data.get('metadata', {}).get('ais_by_format', {}) if data_ready else {},
+                'adsb_by_format': processed_data.get('metadata', {}).get('adsb_by_format', {}) if data_ready else {}
             },
             'cache': {
                 'exists': config.PROCESSED_DATA_CACHE.exists(),
@@ -114,6 +117,86 @@ def health_check():
         return jsonify({
             'status': 'unhealthy',
             'error': str(e)
+        }), 500
+
+
+@app.route('/api/system/info', methods=['GET'])
+def get_system_info():
+    """获取系统信息"""
+    try:
+        # 计算文件行数
+        def count_lines(file_path):
+            try:
+                if file_path.exists():
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        return sum(1 for _ in f)
+                return 0
+            except:
+                return 0
+
+        # 计算文件大小
+        def get_file_size(file_path):
+            try:
+                if file_path.exists():
+                    return file_path.stat().st_size
+                return 0
+            except:
+                return 0
+
+        info = {
+            'backend_version': '2.3',
+            'python_version': sys.version,
+            'data_directory': str(config.DATA_DIR),
+            'cache_directory': str(config.CACHE_DIR),
+            'data_files': {
+                'ais_nmea': {
+                    'exists': config.AIS_NMEA_FILE.exists(),
+                    'size': get_file_size(config.AIS_NMEA_FILE),
+                    'lines': count_lines(config.AIS_NMEA_FILE)
+                },
+                'ais_csv': {
+                    'exists': config.AIS_CSV_FILE.exists(),
+                    'size': get_file_size(config.AIS_CSV_FILE),
+                    'lines': count_lines(config.AIS_CSV_FILE)
+                },
+                'adsb_jsonl': {
+                    'exists': config.ADSB_JSONL_FILE.exists(),
+                    'size': get_file_size(config.ADSB_JSONL_FILE),
+                    'lines': count_lines(config.ADSB_JSONL_FILE)
+                },
+                'adsb_csv': {
+                    'exists': config.ADSB_CSV_FILE.exists(),
+                    'size': get_file_size(config.ADSB_CSV_FILE),
+                    'lines': count_lines(config.ADSB_CSV_FILE)
+                }
+            },
+            'cache': {
+                'exists': config.PROCESSED_DATA_CACHE.exists(),
+                'size': get_file_size(config.PROCESSED_DATA_CACHE),
+                'temp_exists': config.PROCESSED_DATA_CACHE.with_suffix('.tmp').exists(),
+                'bak_exists': config.PROCESSED_DATA_CACHE.with_suffix('.bak').exists()
+            },
+            'data_status': {
+                'processed': processed_data is not None,
+                'last_update': last_update_time.isoformat() if last_update_time else None,
+                'ais_count': processed_data.get('metadata', {}).get('ais_count', 0) if processed_data else 0,
+                'ais_by_format': processed_data.get('metadata', {}).get('ais_by_format', {}) if processed_data else {},
+                'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0) if processed_data else 0,
+                'adsb_by_format': processed_data.get('metadata', {}).get('adsb_by_format', {}) if processed_data else {}
+            }
+        }
+
+        return jsonify({
+            'success': True,
+            'system_info': info,
+            'message': '系统信息获取成功'
+        })
+    except Exception as e:
+        logger.error(f"获取系统信息时出错: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': '系统信息获取失败'
         }), 500
 
 
@@ -417,80 +500,6 @@ def clear_cache():
         }), 500
 
 
-@app.route('/api/system/info', methods=['GET'])
-def get_system_info():
-    """获取系统信息"""
-    try:
-        # 计算文件行数
-        def count_lines(file_path):
-            try:
-                if file_path.exists():
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        return sum(1 for _ in f)
-                return 0
-            except:
-                return 0
-
-        # 计算文件大小
-        def get_file_size(file_path):
-            try:
-                if file_path.exists():
-                    return file_path.stat().st_size
-                return 0
-            except:
-                return 0
-
-        info = {
-            'backend_version': '2.1',
-            'python_version': sys.version,
-            'data_directory': str(config.DATA_DIR),
-            'cache_directory': str(config.CACHE_DIR),
-            'data_files': {
-                'ais_nmea': {
-                    'exists': config.AIS_NMEA_FILE.exists(),
-                    'size': get_file_size(config.AIS_NMEA_FILE),
-                    'lines': count_lines(config.AIS_NMEA_FILE)
-                },
-                'ais_csv': {
-                    'exists': config.AIS_CSV_FILE.exists(),
-                    'size': get_file_size(config.AIS_CSV_FILE),
-                    'lines': count_lines(config.AIS_CSV_FILE)
-                },
-                'adsb': {
-                    'exists': config.ADSB_FILE.exists(),
-                    'size': get_file_size(config.ADSB_FILE),
-                    'lines': count_lines(config.ADSB_FILE)
-                }
-            },
-            'cache': {
-                'exists': config.PROCESSED_DATA_CACHE.exists(),
-                'size': get_file_size(config.PROCESSED_DATA_CACHE),
-                'temp_exists': config.PROCESSED_DATA_CACHE.with_suffix('.tmp').exists(),
-                'bak_exists': config.PROCESSED_DATA_CACHE.with_suffix('.bak').exists()
-            },
-            'data_status': {
-                'processed': processed_data is not None,
-                'last_update': last_update_time.isoformat() if last_update_time else None,
-                'ais_count': processed_data.get('metadata', {}).get('ais_count', 0) if processed_data else 0,
-                'ais_by_format': processed_data.get('metadata', {}).get('ais_by_format', {}) if processed_data else {},
-                'adsb_count': processed_data.get('metadata', {}).get('adsb_count', 0) if processed_data else 0
-            }
-        }
-
-        return jsonify({
-            'success': True,
-            'system_info': info,
-            'message': '系统信息获取成功'
-        })
-    except Exception as e:
-        logger.error(f"获取系统信息时出错: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': '系统信息获取失败'
-        }), 500
-
-
 @app.route('/api/debug/cache/content', methods=['GET'])
 def get_cache_content():
     """获取缓存文件内容（用于调试）"""
@@ -501,6 +510,7 @@ def get_cache_content():
                 'error': '缓存文件不存在'
             }), 404
 
+        import json
         with open(config.PROCESSED_DATA_CACHE, 'r', encoding='utf-8') as f:
             content = f.read()
 
@@ -567,11 +577,14 @@ if __name__ == '__main__':
             except Exception as e:
                 logger.warning(f"读取AIS文件示例时出错: {e}")
 
-    if not config.ADSB_FILE.exists():
-        logger.warning(f"警告: ADS-B文件不存在: {config.ADSB_FILE}")
+    # 检查ADS-B文件
+    adsb_files = config.get_adsb_files()
+    if not adsb_files:
+        logger.warning(f"警告: 未找到任何ADS-B文件")
     else:
-        file_size = config.ADSB_FILE.stat().st_size
-        logger.info(f"ADS-B文件大小: {file_size} 字节")
+        for adsb_file in adsb_files:
+            file_size = adsb_file.stat().st_size
+            logger.info(f"ADS-B文件: {adsb_file.name} 大小: {file_size} 字节")
 
     # 初始化数据
     if not initialize_data():

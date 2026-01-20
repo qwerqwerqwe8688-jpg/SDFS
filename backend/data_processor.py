@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class DataProcessor:
-    """数据处理器 - 集成多个AIS文件和ADS-B数据处理"""
+    """数据处理器 - 集成多个AIS文件和多个ADS-B文件数据处理"""
 
     def __init__(self):
         self.config = Config()
@@ -47,24 +47,23 @@ class DataProcessor:
         logger.info("处理AIS数据文件...")
         all_ais_data = self._process_all_ais_files()
 
-        # 2. 处理ADS-B数据
-        logger.info("处理ADS-B数据...")
-        adsb_data = self.adsb_processor.process_adsb_file(str(self.config.ADSB_FILE))
-        logger.info(f"ADS-B数据处理完成，共 {len(adsb_data)} 条有效记录")
+        # 2. 处理所有ADS-B数据文件
+        logger.info("处理ADS-B数据文件...")
+        all_adsb_data = self._process_all_adsb_files()
 
         # 3. 创建资源覆盖范围
         logger.info("创建资源覆盖范围...")
-        coverage_layers = self._create_coverage_layers(all_ais_data, adsb_data)
+        coverage_layers = self._create_coverage_layers(all_ais_data, all_adsb_data)
 
         # 4. 标准化数据格式
         logger.info("标准化数据格式...")
-        standardized_data = self._standardize_data(all_ais_data, adsb_data, coverage_layers)
+        standardized_data = self._standardize_data(all_ais_data, all_adsb_data, coverage_layers)
 
         # 5. 保存到缓存
         self._save_to_cache(standardized_data)
 
         self.processed_data = standardized_data
-        logger.info(f"数据处理完成。AIS: {len(all_ais_data)}条, ADS-B: {len(adsb_data)}条")
+        logger.info(f"数据处理完成。AIS: {len(all_ais_data)}条, ADS-B: {len(all_adsb_data)}条")
 
         return standardized_data
 
@@ -96,6 +95,35 @@ class DataProcessor:
 
         logger.info(f"AIS数据总共处理完成，共 {len(all_ais_data)} 条有效位置记录")
         return all_ais_data
+
+    def _process_all_adsb_files(self) -> List[ADSData]:
+        """处理所有ADS-B文件"""
+        all_adsb_data = []
+        adsb_files = self.config.get_adsb_files()
+
+        if not adsb_files:
+            logger.warning("未找到任何ADS-B文件")
+            return all_adsb_data
+
+        logger.info(f"找到 {len(adsb_files)} 个ADS-B文件")
+
+        for adsb_file in adsb_files:
+            try:
+                logger.info(f"处理ADS-B文件: {adsb_file.name}")
+                file_data = self.adsb_processor.process_adsb_file(str(adsb_file))
+                all_adsb_data.extend(file_data)
+
+                # 收集清洗统计
+                file_stats = self.adsb_processor.get_cleaning_stats()
+                self._merge_cleaning_stats(file_stats)
+
+                logger.info(f"文件 {adsb_file.name} 处理完成，获得 {len(file_data)} 条记录")
+            except Exception as e:
+                logger.error(f"处理ADS-B文件 {adsb_file.name} 时出错: {str(e)}")
+                continue
+
+        logger.info(f"ADS-B数据总共处理完成，共 {len(all_adsb_data)} 条有效位置记录")
+        return all_adsb_data
 
     def _merge_cleaning_stats(self, file_stats: Dict[str, Any]):
         """合并清洗统计"""
@@ -148,7 +176,8 @@ class DataProcessor:
                 metadata={
                     "data_count": len(adsb_data),
                     "update_time": datetime.now().isoformat(),
-                    "description": "广播式自动相关监视覆盖区域"
+                    "description": "广播式自动相关监视覆盖区域",
+                    "data_sources": [str(file) for file in self.config.get_adsb_files()]
                 }
             )
             coverage_layers.append(adsb_layer.to_dict())
@@ -203,10 +232,6 @@ class DataProcessor:
     def _standardize_data(self, ais_data: List[AISData], adsb_data: List[ADSData],
                           coverage_layers: List[Dict]) -> Dict[str, Any]:
         """标准化数据格式，包含数据质量统计"""
-        # 收集ADS-B清洗统计
-        adsb_stats = self.adsb_processor.get_cleaning_stats()
-        self._merge_cleaning_stats(adsb_stats)
-
         # 分离不同状态的数据
         normal_ais_data = [ais for ais in ais_data if ais.data_status == "normal"]
         warning_ais_data = [ais for ais in ais_data if ais.data_status == "warning"]
@@ -229,24 +254,31 @@ class DataProcessor:
             "error": len(error_adsb_data)
         }
 
-        # 获取AIS文件信息
-        ais_files = self.config.get_ais_files()
-        ais_sources = [str(file) for file in ais_files]
-
-        # 分离不同格式的AIS数据
+        # 分离不同格式的数据
         nmea_ais_data = []
         csv_ais_data = []
 
         for ais in ais_data:
-            # 根据来源判断格式（这里简化处理，实际应用中可能需要更好的判断方法）
+            # 根据来源判断格式
             if hasattr(ais, 'vessel_name') and ais.vessel_name != 'unknown':
                 csv_ais_data.append(ais)
             else:
                 nmea_ais_data.append(ais)
 
+        # 分离不同格式的ADS-B数据
+        jsonl_adsb_data = []
+        csv_adsb_data = []
+
+        for adsb in adsb_data:
+            # 根据是否有heading_deg判断格式（CSV格式通常没有航向信息）
+            if adsb.heading_deg == 0.0 and adsb.data_type == "adsb":
+                csv_adsb_data.append(adsb)
+            else:
+                jsonl_adsb_data.append(adsb)
+
         standardized = {
             "metadata": {
-                "version": "2.2",
+                "version": "2.3",
                 "total_records": len(ais_data) + len(adsb_data),
                 "ais_count": len(ais_data),
                 "ais_by_format": {
@@ -255,12 +287,16 @@ class DataProcessor:
                 },
                 "ais_by_status": ais_status_stats,
                 "adsb_count": len(adsb_data),
+                "adsb_by_format": {
+                    "jsonl": len(jsonl_adsb_data),
+                    "csv": len(csv_adsb_data)
+                },
                 "adsb_by_status": adsb_status_stats,
                 "processing_time": datetime.now().isoformat(),
                 "coordinate_system": "WGS-84",
                 "data_sources": {
-                    "ais_files": ais_sources,
-                    "adsb_file": str(self.config.ADSB_FILE)
+                    "ais_files": [str(file) for file in self.config.get_ais_files()],
+                    "adsb_files": [str(file) for file in self.config.get_adsb_files()]
                 },
                 "data_quality": {
                     "ais_normal_percentage": f"{(len(normal_ais_data) / max(len(ais_data), 1) * 100):.1f}%",
@@ -274,7 +310,8 @@ class DataProcessor:
                 "file_status": {
                     "ais_nmea_exists": self.config.AIS_NMEA_FILE.exists(),
                     "ais_csv_exists": self.config.AIS_CSV_FILE.exists(),
-                    "adsb_exists": self.config.ADSB_FILE.exists()
+                    "adsb_jsonl_exists": self.config.ADSB_JSONL_FILE.exists(),
+                    "adsb_csv_exists": self.config.ADSB_CSV_FILE.exists()
                 }
             },
             "ais_data": [ais.to_dict() for ais in ais_data],
@@ -405,10 +442,11 @@ class DataProcessor:
                     for chunk in iter(lambda: f.read(4096), b""):
                         hash_md5.update(chunk)
 
-        # 添加ADS-B文件哈希
-        if self.config.ADSB_FILE.exists():
-            with open(self.config.ADSB_FILE, 'rb') as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
+        # 添加所有ADS-B文件哈希
+        for adsb_file in self.config.get_adsb_files():
+            if adsb_file.exists():
+                with open(adsb_file, 'rb') as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hash_md5.update(chunk)
 
         return hash_md5.hexdigest()
