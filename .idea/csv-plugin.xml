@@ -10,6 +10,13 @@
             </Attribute>
           </value>
         </entry>
+        <entry key="\s_data\aircraft-data_nov_dec.csv">
+          <value>
+            <Attribute>
+              <option name="separator" value="," />
+            </Attribute>
+          </value>
+        </entry>
       </map>
     </option>
   </component>

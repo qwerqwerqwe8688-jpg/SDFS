@@ -17,6 +17,10 @@ class AISData:
     vessel_type: str
     timestamp: datetime
     data_type: str = "ais"
+    # 数据质量状态
+    data_status: str = "normal"  # normal, warning, error
+    # 数据清洗标记
+    cleaning_notes: str = ""
     # CSV格式的扩展字段
     vessel_name: str = "unknown"
     imo: str = "unknown"
@@ -47,6 +51,10 @@ class ADSData:
     aircraft_tail: str
     timestamp: datetime
     data_type: str = "adsb"
+    # 数据质量状态
+    data_status: str = "normal"  # normal, warning, error
+    # 数据清洗标记
+    cleaning_notes: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         result = asdict(self)
@@ -73,6 +81,20 @@ class ResourceCoverage:
             'label': self.label,
             'metadata': self.metadata
         }
+
+
+@dataclass
+class DataCleaningStats:
+    """数据清洗统计"""
+    total_records: int = 0
+    valid_records: int = 0
+    error_records: int = 0
+    warning_records: int = 0
+    errors_by_type: Dict[str, int] = field(default_factory=dict)
+    warnings_by_type: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 class DataEncoder(json.JSONEncoder):

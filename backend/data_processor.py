@@ -8,7 +8,7 @@ import hashlib
 from .config import Config
 from .ais_decoder import AISDecoder
 from .adsb_processor import ADSBProcessor
-from .models import AISData, ADSData, ResourceCoverage, DataEncoder
+from .models import AISData, ADSData, ResourceCoverage, DataEncoder, DataCleaningStats
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ class DataProcessor:
         self.adsb_processor = ADSBProcessor()
         self.processed_data = None
         self.data_hash = None
+        self.cleaning_stats = DataCleaningStats()
 
     def process_all_data(self, force_update: bool = False) -> Dict[str, Any]:
         """
@@ -38,6 +39,9 @@ class DataProcessor:
                 return cache_data
 
         logger.info("开始处理所有数据...")
+
+        # 重置清洗统计
+        self.cleaning_stats = DataCleaningStats()
 
         # 1. 处理所有AIS数据文件
         logger.info("处理AIS数据文件...")
@@ -80,6 +84,11 @@ class DataProcessor:
                 logger.info(f"处理AIS文件: {ais_file.name}")
                 file_data = self.ais_decoder.decode_ais_file(str(ais_file))
                 all_ais_data.extend(file_data)
+
+                # 收集清洗统计
+                file_stats = self.ais_decoder.get_cleaning_stats()
+                self._merge_cleaning_stats(file_stats)
+
                 logger.info(f"文件 {ais_file.name} 处理完成，获得 {len(file_data)} 条记录")
             except Exception as e:
                 logger.error(f"处理AIS文件 {ais_file.name} 时出错: {str(e)}")
@@ -87,6 +96,23 @@ class DataProcessor:
 
         logger.info(f"AIS数据总共处理完成，共 {len(all_ais_data)} 条有效位置记录")
         return all_ais_data
+
+    def _merge_cleaning_stats(self, file_stats: Dict[str, Any]):
+        """合并清洗统计"""
+        self.cleaning_stats.total_records += file_stats.get('total_records', 0)
+        self.cleaning_stats.valid_records += file_stats.get('valid_records', 0)
+        self.cleaning_stats.error_records += file_stats.get('error_records', 0)
+        self.cleaning_stats.warning_records += file_stats.get('warning_records', 0)
+
+        # 合并错误类型
+        for error_type, count in file_stats.get('errors_by_type', {}).items():
+            self.cleaning_stats.errors_by_type[error_type] = \
+                self.cleaning_stats.errors_by_type.get(error_type, 0) + count
+
+        # 合并警告类型
+        for warning_type, count in file_stats.get('warnings_by_type', {}).items():
+            self.cleaning_stats.warnings_by_type[warning_type] = \
+                self.cleaning_stats.warnings_by_type.get(warning_type, 0) + count
 
     def _create_coverage_layers(self, ais_data: List[AISData], adsb_data: List[ADSData]) -> List[Dict[str, Any]]:
         """创建资源覆盖范围图层"""
@@ -176,26 +202,32 @@ class DataProcessor:
 
     def _standardize_data(self, ais_data: List[AISData], adsb_data: List[ADSData],
                           coverage_layers: List[Dict]) -> Dict[str, Any]:
-        """标准化数据格式"""
-        # 过滤无效的AIS数据（位置为0,0的）
-        valid_ais_data = []
-        for ais in ais_data:
-            if ais.latitude != 0 and ais.longitude != 0:
-                valid_ais_data.append(ais)
+        """标准化数据格式，包含数据质量统计"""
+        # 收集ADS-B清洗统计
+        adsb_stats = self.adsb_processor.get_cleaning_stats()
+        self._merge_cleaning_stats(adsb_stats)
 
-        if len(valid_ais_data) < len(ais_data):
-            logger.info(f"过滤掉 {len(ais_data) - len(valid_ais_data)} 条位置无效的AIS数据")
-            ais_data = valid_ais_data
+        # 分离不同状态的数据
+        normal_ais_data = [ais for ais in ais_data if ais.data_status == "normal"]
+        warning_ais_data = [ais for ais in ais_data if ais.data_status == "warning"]
+        error_ais_data = [ais for ais in ais_data if ais.data_status == "error"]
 
-        # 过滤无效的ADS-B数据
-        valid_adsb_data = []
-        for adsb in adsb_data:
-            if adsb.latitude != 0 and adsb.longitude != 0:
-                valid_adsb_data.append(adsb)
+        normal_adsb_data = [adsb for adsb in adsb_data if adsb.data_status == "normal"]
+        warning_adsb_data = [adsb for adsb in adsb_data if adsb.data_status == "warning"]
+        error_adsb_data = [adsb for adsb in adsb_data if adsb.data_status == "error"]
 
-        if len(valid_adsb_data) < len(adsb_data):
-            logger.info(f"过滤掉 {len(adsb_data) - len(valid_adsb_data)} 条位置无效的ADS-B数据")
-            adsb_data = valid_adsb_data
+        # 统计不同数据状态
+        ais_status_stats = {
+            "normal": len(normal_ais_data),
+            "warning": len(warning_ais_data),
+            "error": len(error_ais_data)
+        }
+
+        adsb_status_stats = {
+            "normal": len(normal_adsb_data),
+            "warning": len(warning_adsb_data),
+            "error": len(error_adsb_data)
+        }
 
         # 获取AIS文件信息
         ais_files = self.config.get_ais_files()
@@ -214,14 +246,16 @@ class DataProcessor:
 
         standardized = {
             "metadata": {
-                "version": "2.1",
+                "version": "2.2",
                 "total_records": len(ais_data) + len(adsb_data),
                 "ais_count": len(ais_data),
                 "ais_by_format": {
                     "nmea": len(nmea_ais_data),
                     "csv": len(csv_ais_data)
                 },
+                "ais_by_status": ais_status_stats,
                 "adsb_count": len(adsb_data),
+                "adsb_by_status": adsb_status_stats,
                 "processing_time": datetime.now().isoformat(),
                 "coordinate_system": "WGS-84",
                 "data_sources": {
@@ -229,9 +263,14 @@ class DataProcessor:
                     "adsb_file": str(self.config.ADSB_FILE)
                 },
                 "data_quality": {
-                    "ais_valid_percentage": f"{(len(ais_data) / max(len(ais_data), 1) * 100):.1f}%",
-                    "adsb_valid_percentage": f"{(len(adsb_data) / max(len(adsb_data), 1) * 100):.1f}%"
+                    "ais_normal_percentage": f"{(len(normal_ais_data) / max(len(ais_data), 1) * 100):.1f}%",
+                    "ais_warning_percentage": f"{(len(warning_ais_data) / max(len(ais_data), 1) * 100):.1f}%",
+                    "ais_error_percentage": f"{(len(error_ais_data) / max(len(ais_data), 1) * 100):.1f}%",
+                    "adsb_normal_percentage": f"{(len(normal_adsb_data) / max(len(adsb_data), 1) * 100):.1f}%",
+                    "adsb_warning_percentage": f"{(len(warning_adsb_data) / max(len(adsb_data), 1) * 100):.1f}%",
+                    "adsb_error_percentage": f"{(len(error_adsb_data) / max(len(adsb_data), 1) * 100):.1f}%"
                 },
+                "data_cleaning": self.cleaning_stats.to_dict(),
                 "file_status": {
                     "ais_nmea_exists": self.config.AIS_NMEA_FILE.exists(),
                     "ais_csv_exists": self.config.AIS_CSV_FILE.exists(),

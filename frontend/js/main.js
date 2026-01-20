@@ -678,6 +678,7 @@ function updateSystemStatus(message, type = 'info') {
 
 // 更新界面统计信息
 // 在updateStatsDisplay函数中添加对AIS格式统计的显示
+// 在updateStatsDisplay函数中添加数据清洗统计显示
 function updateStatsDisplay(stats) {
     if (!stats) return;
 
@@ -694,7 +695,6 @@ function updateStatsDisplay(stats) {
             const statsDisplay = document.querySelector('.stats-display');
             const formatStats = document.createElement('div');
             formatStats.id = 'ais-format-stats';
-            formatStats.className = 'stat-item';
             formatStats.innerHTML = `
                 <div class="stat-item">
                     <span class="stat-label">NMEA格式:</span>
@@ -712,6 +712,88 @@ function updateStatsDisplay(stats) {
         }
     }
 
+    // 更新AIS数据状态统计
+    if (stats.ais_by_status) {
+        const aisStatusStats = document.getElementById('ais-status-stats');
+        if (!aisStatusStats) {
+            const statsDisplay = document.querySelector('.stats-display');
+            const statusStats = document.createElement('div');
+            statusStats.id = 'ais-status-stats';
+            statusStats.innerHTML = `
+                <div class="stat-item">
+                    <span class="stat-label" style="color: #27ae60;">AIS正常:</span>
+                    <span id="ais-normal" class="stat-value">${stats.ais_by_status.normal || 0}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label" style="color: #ff9900;">AIS待复核:</span>
+                    <span id="ais-warning" class="stat-value">${stats.ais_by_status.warning || 0}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label" style="color: #e74c3c;">AIS错误:</span>
+                    <span id="ais-error" class="stat-value">${stats.ais_by_status.error || 0}</span>
+                </div>
+            `;
+            statsDisplay.appendChild(statusStats);
+        } else {
+            document.getElementById('ais-normal').textContent = stats.ais_by_status.normal || 0;
+            document.getElementById('ais-warning').textContent = stats.ais_by_status.warning || 0;
+            document.getElementById('ais-error').textContent = stats.ais_by_status.error || 0;
+        }
+    }
+
+    // 更新ADS-B数据状态统计
+    if (stats.adsb_by_status) {
+        const adsbStatusStats = document.getElementById('adsb-status-stats');
+        if (!adsbStatusStats) {
+            const statsDisplay = document.querySelector('.stats-display');
+            const statusStats = document.createElement('div');
+            statusStats.id = 'adsb-status-stats';
+            statusStats.innerHTML = `
+                <div class="stat-item">
+                    <span class="stat-label" style="color: #27ae60;">ADS-B正常:</span>
+                    <span id="adsb-normal" class="stat-value">${stats.adsb_by_status.normal || 0}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label" style="color: #ff9900;">ADS-B待复核:</span>
+                    <span id="adsb-warning" class="stat-value">${stats.adsb_by_status.warning || 0}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label" style="color: #e74c3c;">ADS-B错误:</span>
+                    <span id="adsb-error" class="stat-value">${stats.adsb_by_status.error || 0}</span>
+                </div>
+            `;
+            statsDisplay.appendChild(statusStats);
+        } else {
+            document.getElementById('adsb-normal').textContent = stats.adsb_by_status.normal || 0;
+            document.getElementById('adsb-warning').textContent = stats.adsb_by_status.warning || 0;
+            document.getElementById('adsb-error').textContent = stats.adsb_by_status.error || 0;
+        }
+    }
+
+    // 更新数据质量百分比
+    if (stats.data_quality) {
+        const qualityStats = document.getElementById('quality-stats');
+        if (!qualityStats) {
+            const statsDisplay = document.querySelector('.stats-display');
+            const qualityDiv = document.createElement('div');
+            qualityDiv.id = 'quality-stats';
+            qualityDiv.innerHTML = `
+                <div class="stat-item">
+                    <span class="stat-label">AIS正常率:</span>
+                    <span id="ais-normal-rate" class="stat-value">${stats.data_quality.ais_normal_percentage || '0%'}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">ADS-B正常率:</span>
+                    <span id="adsb-normal-rate" class="stat-value">${stats.data_quality.adsb_normal_percentage || '0%'}</span>
+                </div>
+            `;
+            statsDisplay.appendChild(qualityDiv);
+        } else {
+            document.getElementById('ais-normal-rate').textContent = stats.data_quality.ais_normal_percentage || '0%';
+            document.getElementById('adsb-normal-rate').textContent = stats.data_quality.adsb_normal_percentage || '0%';
+        }
+    }
+
     // 更新状态统计
     if (stats.status_summary) {
         document.getElementById('online-ais').textContent = stats.status_summary.online_ais || 0;
@@ -725,8 +807,20 @@ function updateStatsDisplay(stats) {
 
     // 更新最后更新时间
     if (stats.last_update) {
-        document.getElementById('last-update').textContent =
-            `最后更新: ${new Date(stats.last_update).toLocaleString()}`;
+        const lastUpdate = new Date(stats.last_update);
+        const now = new Date();
+        const diffMinutes = Math.floor((now - lastUpdate) / (1000 * 60));
+
+        let timeText;
+        if (diffMinutes < 1) {
+            timeText = '刚刚';
+        } else if (diffMinutes < 60) {
+            timeText = `${diffMinutes}分钟前`;
+        } else {
+            timeText = lastUpdate.toLocaleString();
+        }
+
+        document.getElementById('last-update').textContent = `最后更新: ${timeText}`;
     }
 }
 

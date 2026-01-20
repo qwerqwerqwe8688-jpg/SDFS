@@ -65,8 +65,19 @@ class MapVisualization {
     }
 
     // 创建AIS标记
+    // 在createAisMarker和createAdsbMarker方法中添加数据状态指示
     createAisMarker(aisData, index) {
         const isOnline = dataHandler.isDataPointOnline(aisData.timestamp);
+
+        // 根据数据状态选择颜色
+        let color;
+        if (aisData.data_status === 'error') {
+            color = '#ff0000'; // 红色表示错误数据
+        } else if (aisData.data_status === 'warning') {
+            color = '#ff9900'; // 橙色表示待复核数据
+        } else {
+            color = isOnline ? '#3498db' : '#95a5a6'; // 正常数据
+        }
 
         // 创建自定义图标
         const aisIcon = L.divIcon({
@@ -75,11 +86,37 @@ class MapVisualization {
                 <div style="
                     width: 15px;
                     height: 15px;
-                    background-color: ${isOnline ? '#3498db' : '#95a5a6'};
+                    background-color: ${color};
                     border: 2px solid white;
                     border-radius: 50%;
                     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-                "></div>
+                    position: relative;
+                ">
+                    ${aisData.data_status === 'warning' ? `
+                        <div style="
+                            position: absolute;
+                            top: -3px;
+                            right: -3px;
+                            width: 6px;
+                            height: 6px;
+                            background-color: #ff9900;
+                            border-radius: 50%;
+                            border: 1px solid white;
+                        "></div>
+                    ` : ''}
+                    ${aisData.data_status === 'error' ? `
+                        <div style="
+                            position: absolute;
+                            top: -3px;
+                            right: -3px;
+                            width: 6px;
+                            height: 6px;
+                            background-color: #ff0000;
+                            border-radius: 50%;
+                            border: 1px solid white;
+                        "></div>
+                    ` : ''}
+                </div>
             `,
             iconSize: [19, 19],
             iconAnchor: [9, 9]
@@ -88,7 +125,8 @@ class MapVisualization {
         // 创建标记
         const marker = L.marker([aisData.latitude, aisData.longitude], {
             icon: aisIcon,
-            title: `船舶: ${aisData.mmsi}`
+            title: `船舶: ${aisData.mmsi} (${aisData.data_status === 'normal' ? '正常' :
+                                          aisData.data_status === 'warning' ? '待复核' : '错误'})`
         });
 
         // 添加弹出窗口
@@ -103,9 +141,18 @@ class MapVisualization {
         return marker;
     }
 
-    // 创建ADS-B标记
     createAdsbMarker(adsbData, index) {
         const isOnline = dataHandler.isDataPointOnline(adsbData.timestamp);
+
+        // 根据数据状态选择颜色
+        let color;
+        if (adsbData.data_status === 'error') {
+            color = '#ff0000'; // 红色表示错误数据
+        } else if (adsbData.data_status === 'warning') {
+            color = '#ff9900'; // 橙色表示待复核数据
+        } else {
+            color = isOnline ? '#e74c3c' : '#95a5a6'; // 正常数据
+        }
 
         // 创建自定义图标（飞机形状）
         const adsbIcon = L.divIcon({
@@ -114,7 +161,7 @@ class MapVisualization {
                 <div style="
                     width: 20px;
                     height: 20px;
-                    background-color: ${isOnline ? '#e74c3c' : '#95a5a6'};
+                    background-color: ${color};
                     border: 2px solid white;
                     border-radius: 3px;
                     transform: rotate(45deg);
@@ -130,6 +177,32 @@ class MapVisualization {
                         background-color: white;
                         border-radius: 50%;
                     "></div>
+                    ${adsbData.data_status === 'warning' ? `
+                        <div style="
+                            position: absolute;
+                            top: -5px;
+                            right: -5px;
+                            width: 8px;
+                            height: 8px;
+                            background-color: #ff9900;
+                            border-radius: 50%;
+                            border: 1px solid white;
+                            transform: rotate(-45deg);
+                        "></div>
+                    ` : ''}
+                    ${adsbData.data_status === 'error' ? `
+                        <div style="
+                            position: absolute;
+                            top: -5px;
+                            right: -5px;
+                            width: 8px;
+                            height: 8px;
+                            background-color: #ff0000;
+                            border-radius: 50%;
+                            border: 1px solid white;
+                            transform: rotate(-45deg);
+                        "></div>
+                    ` : ''}
                 </div>
             `,
             iconSize: [24, 24],
@@ -139,7 +212,8 @@ class MapVisualization {
         // 创建标记
         const marker = L.marker([adsbData.latitude, adsbData.longitude], {
             icon: adsbIcon,
-            title: `飞机: ${adsbData.aircraft_tail}`
+            title: `飞机: ${adsbData.aircraft_tail} (${adsbData.data_status === 'normal' ? '正常' :
+                                                adsbData.data_status === 'warning' ? '待复核' : '错误'})`
         });
 
         // 添加弹出窗口
@@ -154,12 +228,33 @@ class MapVisualization {
         return marker;
     }
 
-    // 创建AIS弹出窗口内容
-    // 在createAisPopupContent方法中添加CSV字段显示
+    // 在弹出窗口中添加数据状态信息
     createAisPopupContent(aisData) {
         const isOnline = dataHandler.isDataPointOnline(aisData.timestamp);
 
-        let popupHtml = `
+        // 判断是否为CSV格式（包含额外字段）
+        const isCsvFormat = aisData.vessel_name !== undefined && aisData.vessel_name !== 'unknown';
+
+        // 数据状态标签
+        let statusLabel = '';
+        let statusColor = '';
+        let statusBg = '';
+
+        if (aisData.data_status === 'normal') {
+            statusLabel = '正常';
+            statusColor = '#27ae60';
+            statusBg = '#d4edda';
+        } else if (aisData.data_status === 'warning') {
+            statusLabel = '待复核';
+            statusColor = '#ff9900';
+            statusBg = '#fff3cd';
+        } else {
+            statusLabel = '错误';
+            statusColor = '#e74c3c';
+            statusBg = '#f8d7da';
+        }
+
+        return `
             <div style="min-width: 250px; font-family: Arial, sans-serif;">
                 <div style="
                     background-color: ${isOnline ? '#3498db' : '#95a5a6'};
@@ -169,41 +264,51 @@ class MapVisualization {
                     margin: -10px -10px 10px -10px;
                     font-weight: bold;
                 ">
-                    船舶信息 (AIS)
+                    船舶信息 (AIS${isCsvFormat ? ' - CSV格式' : ' - NMEA格式'})
                 </div>
+                <div style="
+                    background-color: ${statusBg};
+                    color: ${statusColor};
+                    padding: 3px 8px;
+                    margin: 5px 0;
+                    border-radius: 12px;
+                    font-size: 0.8rem;
+                    font-weight: bold;
+                    display: inline-block;
+                ">
+                    ${statusLabel}
+                </div>
+                ${aisData.cleaning_notes ? `
+                    <div style="
+                        background-color: #f8f9fa;
+                        border-left: 3px solid ${statusColor};
+                        padding: 5px 8px;
+                        margin: 5px 0;
+                        font-size: 0.8rem;
+                        color: #6c757d;
+                    ">
+                        <strong>数据质量备注:</strong> ${aisData.cleaning_notes}
+                    </div>
+                ` : ''}
                 <p><strong>MMSI:</strong> ${aisData.mmsi}</p>
-                <p><strong>船名:</strong> ${aisData.vessel_name || '未知'}</p>
+                ${isCsvFormat ? `
+                    <p><strong>船名:</strong> ${aisData.vessel_name || '未知'}</p>
+                    <p><strong>呼号:</strong> ${aisData.call_sign || '未知'}</p>
+                    <p><strong>IMO:</strong> ${aisData.imo || '未知'}</p>
+                ` : ''}
                 <p><strong>位置:</strong><br>
                    ${aisData.latitude.toFixed(6)}°N,<br>
                    ${aisData.longitude.toFixed(6)}°E</p>
                 <p><strong>航速:</strong> ${aisData.sog.toFixed(1)} 节</p>
                 <p><strong>航向:</strong> ${aisData.cog.toFixed(1)}°</p>
                 <p><strong>船舶类型:</strong> ${aisData.vessel_type}</p>
-        `;
-
-        // 添加CSV特有的字段（如果存在）
-        if (aisData.imo && aisData.imo !== 'unknown') {
-            popupHtml += `<p><strong>IMO:</strong> ${aisData.imo}</p>`;
-        }
-        if (aisData.call_sign && aisData.call_sign !== 'unknown') {
-            popupHtml += `<p><strong>呼号:</strong> ${aisData.call_sign}</p>`;
-        }
-        if (aisData.status && aisData.status !== 'unknown') {
-            popupHtml += `<p><strong>状态码:</strong> ${aisData.status}</p>`;
-        }
-        if (aisData.length > 0) {
-            popupHtml += `<p><strong>尺寸:</strong> ${aisData.length.toFixed(1)}×${aisData.width.toFixed(1)}m</p>`;
-        }
-        if (aisData.draft > 0) {
-            popupHtml += `<p><strong>吃水:</strong> ${aisData.draft.toFixed(1)}m</p>`;
-        }
-        if (aisData.cargo && aisData.cargo !== 'unknown') {
-            popupHtml += `<p><strong>货物:</strong> ${aisData.cargo}</p>`;
-        }
-
-        popupHtml += `
                 <p><strong>航行状态:</strong> ${aisData.nav_status}</p>
-                <p><strong>状态:</strong>
+                ${isCsvFormat ? `
+                    ${aisData.length > 0 ? `<p><strong>尺寸:</strong> ${aisData.length.toFixed(1)}×${aisData.width.toFixed(1)}m</p>` : ''}
+                    ${aisData.draft > 0 ? `<p><strong>吃水:</strong> ${aisData.draft.toFixed(1)}m</p>` : ''}
+                    ${aisData.cargo && aisData.cargo !== 'unknown' ? `<p><strong>货物:</strong> ${aisData.cargo}</p>` : ''}
+                ` : ''}
+                <p><strong>在线状态:</strong>
                     <span style="color: ${isOnline ? '#27ae60' : '#e74c3c'}">
                         ${isOnline ? '在线' : '离线'}
                     </span>
@@ -212,16 +317,32 @@ class MapVisualization {
                 <p><small>点击标记查看详细信息</small></p>
             </div>
         `;
-
-        return popupHtml;
     }
 
-    // 创建ADS-B弹出窗口内容
     createAdsbPopupContent(adsbData) {
         const isOnline = dataHandler.isDataPointOnline(adsbData.timestamp);
 
+        // 数据状态标签
+        let statusLabel = '';
+        let statusColor = '';
+        let statusBg = '';
+
+        if (adsbData.data_status === 'normal') {
+            statusLabel = '正常';
+            statusColor = '#27ae60';
+            statusBg = '#d4edda';
+        } else if (adsbData.data_status === 'warning') {
+            statusLabel = '待复核';
+            statusColor = '#ff9900';
+            statusBg = '#fff3cd';
+        } else {
+            statusLabel = '错误';
+            statusColor = '#e74c3c';
+            statusBg = '#f8d7da';
+        }
+
         return `
-            <div style="min-width: 200px; font-family: Arial, sans-serif;">
+            <div style="min-width: 250px; font-family: Arial, sans-serif;">
                 <div style="
                     background-color: ${isOnline ? '#e74c3c' : '#95a5a6'};
                     color: white;
@@ -232,17 +353,44 @@ class MapVisualization {
                 ">
                     飞机信息 (ADS-B)
                 </div>
+                <div style="
+                    background-color: ${statusBg};
+                    color: ${statusColor};
+                    padding: 3px 8px;
+                    margin: 5px 0;
+                    border-radius: 12px;
+                    font-size: 0.8rem;
+                    font-weight: bold;
+                    display: inline-block;
+                ">
+                    ${statusLabel}
+                </div>
+                ${adsbData.cleaning_notes ? `
+                    <div style="
+                        background-color: #f8f9fa;
+                        border-left: 3px solid ${statusColor};
+                        padding: 5px 8px;
+                        margin: 5px 0;
+                        font-size: 0.8rem;
+                        color: #6c757d;
+                    ">
+                        <strong>数据质量备注:</strong> ${adsbData.cleaning_notes}
+                    </div>
+                ` : ''}
+                <p><strong>飞机ID:</strong> ${adsbData.aircraft_id}</p>
                 <p><strong>尾号:</strong> ${adsbData.aircraft_tail}</p>
                 <p><strong>位置:</strong><br>
                    ${adsbData.latitude.toFixed(6)}°N,<br>
                    ${adsbData.longitude.toFixed(6)}°E</p>
                 <p><strong>高度:</strong> ${adsbData.altitude_ft.toFixed(0)} 英尺</p>
                 <p><strong>地速:</strong> ${adsbData.ground_speed_kts.toFixed(0)} 节</p>
-                <p><strong>状态:</strong>
+                <p><strong>航向:</strong> ${adsbData.heading_deg.toFixed(1)}°</p>
+                <p><strong>在线状态:</strong>
                     <span style="color: ${isOnline ? '#27ae60' : '#e74c3c'}">
                         ${isOnline ? '在线' : '离线'}
                     </span>
                 </p>
+                <p><strong>时间:</strong> ${new Date(adsbData.timestamp).toLocaleString()}</p>
                 <p><small>点击标记查看详细信息</small></p>
             </div>
         `;

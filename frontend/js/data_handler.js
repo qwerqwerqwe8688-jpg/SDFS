@@ -175,8 +175,24 @@ class DataHandler {
 
     // 格式化数据点信息
     // 在formatDataPointInfo方法中添加对CSV格式AIS数据的显示
+    // 在formatDataPointInfo方法中添加数据状态显示
     formatDataPointInfo(dataPoint) {
         const isOnline = this.isDataPointOnline(dataPoint.timestamp);
+
+        // 数据状态标签
+        let statusLabel = '';
+        let statusColor = '';
+
+        if (dataPoint.data_status === 'normal') {
+            statusLabel = '正常';
+            statusColor = '#27ae60';
+        } else if (dataPoint.data_status === 'warning') {
+            statusLabel = '待复核';
+            statusColor = '#ff9900';
+        } else {
+            statusLabel = '错误';
+            statusColor = '#e74c3c';
+        }
 
         let info = '';
         if (dataPoint.data_type === 'ais') {
@@ -186,6 +202,31 @@ class DataHandler {
             info = `
                 <div class="data-item">
                     <h4>船舶信息 (AIS${isCsvFormat ? ' - CSV格式' : ' - NMEA格式'})</h4>
+                    <div style="
+                        background-color: ${dataPoint.data_status === 'normal' ? '#d4edda' :
+                                         dataPoint.data_status === 'warning' ? '#fff3cd' : '#f8d7da'};
+                        color: ${statusColor};
+                        padding: 3px 8px;
+                        margin: 5px 0;
+                        border-radius: 12px;
+                        font-size: 0.8rem;
+                        font-weight: bold;
+                        display: inline-block;
+                    ">
+                        ${statusLabel}
+                    </div>
+                    ${dataPoint.cleaning_notes ? `
+                        <div style="
+                            background-color: #f8f9fa;
+                            border-left: 3px solid ${statusColor};
+                            padding: 5px 8px;
+                            margin: 5px 0;
+                            font-size: 0.9rem;
+                            color: #6c757d;
+                        ">
+                            <strong>数据质量备注:</strong> ${dataPoint.cleaning_notes}
+                        </div>
+                    ` : ''}
                     <p><strong>MMSI:</strong> ${dataPoint.mmsi}</p>
             `;
 
@@ -225,6 +266,31 @@ class DataHandler {
             info = `
                 <div class="data-item adsb">
                     <h4>飞机信息 (ADS-B)</h4>
+                    <div style="
+                        background-color: ${dataPoint.data_status === 'normal' ? '#d4edda' :
+                                         dataPoint.data_status === 'warning' ? '#fff3cd' : '#f8d7da'};
+                        color: ${statusColor};
+                        padding: 3px 8px;
+                        margin: 5px 0;
+                        border-radius: 12px;
+                        font-size: 0.8rem;
+                        font-weight: bold;
+                        display: inline-block;
+                    ">
+                        ${statusLabel}
+                    </div>
+                    ${dataPoint.cleaning_notes ? `
+                        <div style="
+                            background-color: #f8f9fa;
+                            border-left: 3px solid ${statusColor};
+                            padding: 5px 8px;
+                            margin: 5px 0;
+                            font-size: 0.9rem;
+                            color: #6c757d;
+                        ">
+                            <strong>数据质量备注:</strong> ${dataPoint.cleaning_notes}
+                        </div>
+                    ` : ''}
                     <p><strong>飞机ID:</strong> ${dataPoint.aircraft_id}</p>
                     <p><strong>尾号:</strong> ${dataPoint.aircraft_tail}</p>
                     <p><strong>位置:</strong> ${dataPoint.latitude.toFixed(6)}, ${dataPoint.longitude.toFixed(6)}</p>

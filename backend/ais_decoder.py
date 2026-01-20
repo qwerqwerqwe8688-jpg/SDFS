@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 import re
 import csv
 from pathlib import Path
-from .models import AISData
+from .models import AISData, DataCleaningStats
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,12 +16,16 @@ class AISDecoder:
 
     def __init__(self):
         self.decoded_data = []
+        self.cleaning_stats = DataCleaningStats()
 
     def decode_ais_file(self, file_path: str) -> List[AISData]:
         """
-        解码AIS文件中的所有数据，支持NMEA和CSV格式
+        解码AIS文件中的所有数据，支持NMEA和CSV格式，包含数据清洗
         """
         logger.info(f"开始解码AIS文件: {file_path}")
+
+        # 重置清洗统计
+        self.cleaning_stats = DataCleaningStats()
 
         file_path = Path(file_path)
         if not file_path.exists():
@@ -59,7 +63,7 @@ class AISDecoder:
         return first_line.startswith('!AIVDM') or first_line.startswith('!AIVDO')
 
     def _decode_csv_file(self, file_path: Path) -> List[AISData]:
-        """解码CSV格式的AIS文件"""
+        """解码CSV格式的AIS文件，包含数据清洗"""
         decoded_records = []
 
         try:
@@ -71,6 +75,7 @@ class AISDecoder:
 
                 for row_num, row in enumerate(csv_reader, 1):
                     total_rows = row_num
+                    self.cleaning_stats.total_records += 1
 
                     try:
                         # 解析必需字段
@@ -78,24 +83,57 @@ class AISDecoder:
                         lat_str = row.get('LAT', '').strip()
                         lon_str = row.get('LON', '').strip()
 
-                        if not mmsi or not lat_str or not lon_str:
-                            logger.debug(f"第 {row_num} 行缺少必需字段: MMSI={mmsi}, LAT={lat_str}, LON={lon_str}")
+                        # 数据清洗检查
+                        cleaning_notes = []
+                        data_status = "normal"
+
+                        # 检查核心字段缺失
+                        if not mmsi or mmsi == 'unknown':
+                            cleaning_notes.append("MMSI缺失")
+                            data_status = "warning"
+                            # 标记为待复核但不剔除
+
+                        if not lat_str or not lon_str:
+                            cleaning_notes.append("经纬度缺失")
+                            data_status = "error"  # 没有位置数据，剔除
+                            self.cleaning_stats.errors_by_type['missing_coordinates'] = \
+                                self.cleaning_stats.errors_by_type.get('missing_coordinates', 0) + 1
                             continue
 
-                        # 转换数据类型
+                        # 转换数据类型并验证
                         try:
                             lat = float(lat_str)
                             lon = float(lon_str)
                         except ValueError:
-                            logger.debug(f"第 {row_num} 行坐标格式错误: LAT={lat_str}, LON={lon_str}")
+                            cleaning_notes.append(f"坐标格式错误: LAT={lat_str}, LON={lon_str}")
+                            data_status = "error"
+                            self.cleaning_stats.errors_by_type['coordinate_format'] = \
+                                self.cleaning_stats.errors_by_type.get('coordinate_format', 0) + 1
                             continue
 
                         # 验证坐标范围
-                        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-                            logger.debug(f"第 {row_num} 行坐标超出范围: LAT={lat}, LON={lon}")
+                        if not (-90 <= lat <= 90):
+                            cleaning_notes.append(f"纬度超出范围: {lat}")
+                            data_status = "error"
+                            self.cleaning_stats.errors_by_type['latitude_range'] = \
+                                self.cleaning_stats.errors_by_type.get('latitude_range', 0) + 1
                             continue
 
-                        # 解析可选数值字段
+                        if not (-180 <= lon <= 180):
+                            cleaning_notes.append(f"经度超出范围: {lon}")
+                            data_status = "error"
+                            self.cleaning_stats.errors_by_type['longitude_range'] = \
+                                self.cleaning_stats.errors_by_type.get('longitude_range', 0) + 1
+                            continue
+
+                        # 检查异常坐标（如0,0海洋交叉点）
+                        if lat == 0 and lon == 0:
+                            cleaning_notes.append("可疑坐标(0,0)")
+                            data_status = "warning"
+                            self.cleaning_stats.warnings_by_type['suspicious_coordinates'] = \
+                                self.cleaning_stats.warnings_by_type.get('suspicious_coordinates', 0) + 1
+
+                        # 解析可选数值字段并进行清洗
                         sog = self._parse_float(row.get('SOG', '0'))
                         cog = self._parse_float(row.get('COG', '0'))
                         heading = self._parse_float(row.get('Heading', '0'))
@@ -103,16 +141,50 @@ class AISDecoder:
                         width = self._parse_float(row.get('Width', '0'))
                         draft = self._parse_float(row.get('Draft', '0'))
 
+                        # 检查数值范围异常
+                        if sog < 0 or sog > 50:  # 假设航速合理范围
+                            cleaning_notes.append(f"航速异常: {sog}")
+                            sog = max(0, min(sog, 50))  # 截断到合理范围
+                            data_status = "warning" if data_status == "normal" else data_status
+                            self.cleaning_stats.warnings_by_type['speed_range'] = \
+                                self.cleaning_stats.warnings_by_type.get('speed_range', 0) + 1
+
+                        if cog < 0 or cog > 360:
+                            cleaning_notes.append(f"航向异常: {cog}")
+                            cog = cog % 360  # 归一化到0-360度
+                            data_status = "warning" if data_status == "normal" else data_status
+                            self.cleaning_stats.warnings_by_type['course_range'] = \
+                                self.cleaning_stats.warnings_by_type.get('course_range', 0) + 1
+
+                        if heading < 0 or heading > 360:
+                            cleaning_notes.append(f"船首向异常: {heading}")
+                            heading = heading % 360  # 归一化到0-360度
+                            data_status = "warning" if data_status == "normal" else data_status
+                            self.cleaning_stats.warnings_by_type['heading_range'] = \
+                                self.cleaning_stats.warnings_by_type.get('heading_range', 0) + 1
+
+                        # 检查船舶尺寸合理性
+                        if length > 0 and (length < 5 or length > 500):  # 假设船舶长度合理范围
+                            cleaning_notes.append(f"船长异常: {length}")
+                            data_status = "warning" if data_status == "normal" else data_status
+                            self.cleaning_stats.warnings_by_type['length_range'] = \
+                                self.cleaning_stats.warnings_by_type.get('length_range', 0) + 1
+
                         # 解析时间戳
                         timestamp_str = row.get('BaseDateTime', '')
+                        timestamp = datetime.now()  # 默认值
+
                         if timestamp_str:
                             try:
                                 timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                             except ValueError:
-                                logger.debug(f"第 {row_num} 行时间戳格式错误: {timestamp_str}")
-                                timestamp = datetime.now()
+                                cleaning_notes.append(f"时间戳格式错误: {timestamp_str}")
+                                data_status = "warning" if data_status == "normal" else data_status
+                                self.cleaning_stats.warnings_by_type['timestamp_format'] = \
+                                    self.cleaning_stats.warnings_by_type.get('timestamp_format', 0) + 1
                         else:
-                            timestamp = datetime.now()
+                            cleaning_notes.append("时间戳缺失")
+                            data_status = "warning" if data_status == "normal" else data_status
 
                         # 解析船舶类型和状态
                         vessel_type_code = row.get('VesselType', '0')
@@ -120,6 +192,8 @@ class AISDecoder:
                             vessel_type_code_int = int(float(vessel_type_code))
                         except (ValueError, TypeError):
                             vessel_type_code_int = 0
+                            cleaning_notes.append(f"船舶类型代码格式错误: {vessel_type_code}")
+                            data_status = "warning" if data_status == "normal" else data_status
 
                         vessel_type = self._get_vessel_type(vessel_type_code_int)
 
@@ -128,7 +202,7 @@ class AISDecoder:
 
                         # 创建AIS数据对象
                         ais_data = AISData(
-                            mmsi=mmsi,
+                            mmsi=mmsi if mmsi else "unknown",
                             latitude=lat,
                             longitude=lon,
                             sog=sog,
@@ -138,6 +212,8 @@ class AISDecoder:
                             vessel_type=vessel_type,
                             timestamp=timestamp,
                             data_type="ais",
+                            data_status=data_status,
+                            cleaning_notes="; ".join(cleaning_notes) if cleaning_notes else "",
                             vessel_name=row.get('VesselName', 'unknown').strip(),
                             imo=row.get('IMO', 'unknown').strip(),
                             call_sign=row.get('CallSign', 'unknown').strip(),
@@ -153,15 +229,30 @@ class AISDecoder:
                         decoded_records.append(ais_data)
                         valid_count += 1
 
+                        # 更新统计
+                        if data_status == "error":
+                            self.cleaning_stats.error_records += 1
+                        elif data_status == "warning":
+                            self.cleaning_stats.warning_records += 1
+                        else:
+                            self.cleaning_stats.valid_records += 1
+
                         # 每处理1000条记录输出一次进度
                         if row_num % 1000 == 0:
                             logger.info(f"已处理 {row_num} 行CSV数据，有效: {valid_count}")
 
                     except Exception as e:
                         logger.debug(f"处理第 {row_num} 行CSV数据时出错: {str(e)}")
+                        self.cleaning_stats.error_records += 1
+                        self.cleaning_stats.errors_by_type['processing_error'] = \
+                            self.cleaning_stats.errors_by_type.get('processing_error', 0) + 1
                         continue
 
+                # 输出清洗统计
                 logger.info(f"CSV文件处理完成，总行数: {total_rows}, 有效记录: {valid_count}")
+                logger.info(f"数据清洗统计: 正常={self.cleaning_stats.valid_records}, "
+                            f"警告={self.cleaning_stats.warning_records}, "
+                            f"错误={self.cleaning_stats.error_records}")
 
         except Exception as e:
             logger.error(f"读取CSV文件时出错: {str(e)}")
@@ -170,7 +261,7 @@ class AISDecoder:
         return decoded_records
 
     def _decode_nmea_file(self, file_path: Path) -> List[AISData]:
-        """解码NMEA格式的AIS文件"""
+        """解码NMEA格式的AIS文件，包含数据清洗"""
         decoded_records = []
 
         try:
@@ -185,6 +276,8 @@ class AISDecoder:
             multi_part_messages = {}
 
             for i, line in enumerate(lines, 1):
+                self.cleaning_stats.total_records += 1
+
                 try:
                     line = line.strip()
                     if not line:
@@ -250,6 +343,9 @@ class AISDecoder:
 
                 except Exception as e:
                     logger.warning(f"处理第 {i} 行时出错: {str(e)}")
+                    self.cleaning_stats.error_records += 1
+                    self.cleaning_stats.errors_by_type['processing_error'] = \
+                        self.cleaning_stats.errors_by_type.get('processing_error', 0) + 1
                     continue
 
         except FileNotFoundError:
@@ -265,10 +361,14 @@ class AISDecoder:
                 logger.warning(f"未完成的多片段消息 {message_key}: 收到 {len(fragments)} 个片段")
 
         logger.info(f"AIS解码完成，共获得 {len(decoded_records)} 条有效位置记录")
+        logger.info(f"数据清洗统计: 正常={self.cleaning_stats.valid_records}, "
+                    f"警告={self.cleaning_stats.warning_records}, "
+                    f"错误={self.cleaning_stats.error_records}")
+
         return decoded_records
 
     def _decode_single_nmea_message(self, nmea_string: str) -> AISData:
-        """解码单条NMEA格式的AIS消息"""
+        """解码单条NMEA格式的AIS消息，包含数据清洗"""
         try:
             # 使用pyais解码
             decoded = pyais.decode(nmea_string)
@@ -289,6 +389,9 @@ class AISDecoder:
                 lon = msg_dict.get('lon')
 
                 if lat is None or lon is None:
+                    self.cleaning_stats.error_records += 1
+                    self.cleaning_stats.errors_by_type['missing_coordinates'] = \
+                        self.cleaning_stats.errors_by_type.get('missing_coordinates', 0) + 1
                     return None
 
                 # 确保坐标值是数字
@@ -296,28 +399,86 @@ class AISDecoder:
                     lat = float(lat)
                     lon = float(lon)
                 except (ValueError, TypeError):
+                    self.cleaning_stats.error_records += 1
+                    self.cleaning_stats.errors_by_type['coordinate_format'] = \
+                        self.cleaning_stats.errors_by_type.get('coordinate_format', 0) + 1
                     return None
+
+                # 数据清洗检查
+                cleaning_notes = []
+                data_status = "normal"
+
+                # 检查核心字段缺失
+                mmsi = str(msg_dict.get('mmsi', 'unknown'))
+                if not mmsi or mmsi == 'unknown':
+                    cleaning_notes.append("MMSI缺失")
+                    data_status = "warning"
+                    self.cleaning_stats.warning_records += 1
+                    self.cleaning_stats.warnings_by_type['missing_mmsi'] = \
+                        self.cleaning_stats.warnings_by_type.get('missing_mmsi', 0) + 1
+                else:
+                    self.cleaning_stats.valid_records += 1
 
                 # 跳过无效的坐标
                 if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    self.cleaning_stats.error_records += 1
+                    self.cleaning_stats.errors_by_type['coordinate_range'] = \
+                        self.cleaning_stats.errors_by_type.get('coordinate_range', 0) + 1
                     return None
+
+                # 检查异常坐标（如0,0海洋交叉点）
+                if lat == 0 and lon == 0:
+                    cleaning_notes.append("可疑坐标(0,0)")
+                    data_status = "warning"
+                    self.cleaning_stats.warnings_by_type['suspicious_coordinates'] = \
+                        self.cleaning_stats.warnings_by_type.get('suspicious_coordinates', 0) + 1
+
+                # 获取数值字段并进行清洗
+                sog = float(msg_dict.get('sog', 0.0)) if msg_dict.get('sog') is not None else 0.0
+                cog = float(msg_dict.get('cog', 0.0)) if msg_dict.get('cog') is not None else 0.0
+                heading = float(msg_dict.get('heading', 0.0)) if msg_dict.get('heading') is not None else 0.0
+
+                # 检查数值范围异常
+                if sog < 0 or sog > 50:
+                    cleaning_notes.append(f"航速异常: {sog}")
+                    sog = max(0, min(sog, 50))
+                    data_status = "warning" if data_status == "normal" else data_status
+
+                if cog < 0 or cog > 360:
+                    cleaning_notes.append(f"航向异常: {cog}")
+                    cog = cog % 360
+                    data_status = "warning" if data_status == "normal" else data_status
+
+                if heading < 0 or heading > 360:
+                    cleaning_notes.append(f"船首向异常: {heading}")
+                    heading = heading % 360
+                    data_status = "warning" if data_status == "normal" else data_status
 
                 # 创建AIS数据对象
                 ais_data = AISData(
-                    mmsi=str(msg_dict.get('mmsi', 'unknown')),
+                    mmsi=mmsi,
                     latitude=lat,
                     longitude=lon,
-                    sog=float(msg_dict.get('sog', 0.0)) if msg_dict.get('sog') is not None else 0.0,
-                    cog=float(msg_dict.get('cog', 0.0)) if msg_dict.get('cog') is not None else 0.0,
-                    heading=float(msg_dict.get('heading', 0.0)) if msg_dict.get('heading') is not None else 0.0,
+                    sog=sog,
+                    cog=cog,
+                    heading=heading,
                     nav_status=self._get_nav_status(msg_dict.get('nav_status')),
                     vessel_type=self._get_vessel_type(msg_dict.get('type')),
-                    timestamp=datetime.now()
+                    timestamp=datetime.now(),
+                    data_status=data_status,
+                    cleaning_notes="; ".join(cleaning_notes) if cleaning_notes else ""
                 )
                 return ais_data
+            else:
+                self.cleaning_stats.error_records += 1
+                self.cleaning_stats.errors_by_type['no_position_data'] = \
+                    self.cleaning_stats.errors_by_type.get('no_position_data', 0) + 1
 
         except Exception as e:
             logger.debug(f"解码消息时出错: {str(e)}")
+            self.cleaning_stats.error_records += 1
+            self.cleaning_stats.errors_by_type['decoding_error'] = \
+                self.cleaning_stats.errors_by_type.get('decoding_error', 0) + 1
             return None
 
         return None
@@ -471,3 +632,7 @@ class AISDecoder:
             99: "Other"
         }
         return vessel_type_map.get(vessel_type_code, f"Unknown ({vessel_type_code})")
+
+    def get_cleaning_stats(self) -> Dict[str, Any]:
+        """获取数据清洗统计"""
+        return self.cleaning_stats.to_dict()
